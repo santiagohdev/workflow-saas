@@ -155,6 +155,13 @@ export function Facturacion({ orgId, uso, onActualizar }: Props) {
           <li>Recién ahí cambia el plan en la base de datos.</li>
         </ol>
 
+        <p className="ayuda">
+          <strong style={{ color: "var(--texto)" }}>En esta demostración no hay cobro real.</strong>{" "}
+          El paso 2 lo cubre el backend: genera el mismo evento que enviaría Stripe y lo firma con
+          el secreto del webhook. Los pasos 3 y 4 son los de producción, sin atajos — si la firma
+          no verifica, el plan no cambia.
+        </p>
+
         {ultimoEvento && (
           <>
             <p className="ayuda" style={{ marginBottom: 8 }}>Último evento procesado:</p>
