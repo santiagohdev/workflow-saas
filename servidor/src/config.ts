@@ -61,6 +61,13 @@ export const config = Object.freeze({
 
   stripeWebhookSecret: texto("STRIPE_WEBHOOK_SECRET", "whsec_local_de_prueba"),
 
+  /* La ruta que simula el webhook permite activarse premium sin pagar, así que
+     en producción está apagada. Un despliegue de demostración es el único caso
+     legítimo para encenderla, y tiene que pedirse a propósito: por eso es una
+     variable aparte y no se deduce de NODE_ENV. Nunca en un entorno con
+     clientes reales. */
+  permitirSimulacionDePagos: texto("DEMO_SIMULAR_PAGOS", "") === "true",
+
   limiteTablerosGratis: entero("LIMITE_TABLEROS_GRATIS", 3),
   limiteMiembrosGratis: entero("LIMITE_MIEMBROS_GRATIS", 5),
 });

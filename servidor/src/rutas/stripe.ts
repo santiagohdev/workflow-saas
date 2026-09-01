@@ -240,7 +240,7 @@ rutasStripe.post(
   requireRole("owner"),
   async (req: RequestAuth, res: Response, next) => {
     try {
-      if (config.esProduccion) {
+      if (config.esProduccion && !config.permitirSimulacionDePagos) {
         throw new ErrorHttp(404, "Ruta no disponible.", "ruta_inexistente");
       }
 
