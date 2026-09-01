@@ -1,156 +1,268 @@
 /* ============================================================================
    Capa de acceso a datos.
 
-   Corre sobre SQLite, que viene incluido en Node y no necesita instalar nada:
-   el proyecto arranca con un npm install y cero servicios externos. El
-   esquema es el mismo que el de sql/001_supabase.sql, de modo que migrar a
-   PostgreSQL es reemplazar este archivo y no tocar el resto del sistema.
+   Corre sobre PostgreSQL. El resto de la aplicación no toca el driver: habla
+   contra las cuatro funciones de este módulo. Esa frontera es lo que permitió
+   cambiar de motor sin reescribir las rutas, y por eso este archivo ya no
+   exporta el cliente: si vuelve a filtrarse, el próximo cambio deja de ser
+   barato.
 
-   El resto de la aplicación no importa `db` directamente: habla contra las
-   funciones de este módulo. Esa frontera es lo que hace que el cambio de
-   motor sea barato.
+   Dos traducciones ocurren acá y en ningún otro lado:
+
+   1. Los parámetros se escriben `?` como en SQLite y se convierten a `$1, $2`
+      antes de salir. Así las consultas de las rutas quedaron intactas.
+
+   2. Las marcas de tiempo vuelven como texto ISO, no como Date. El panel ya
+      esperaba texto; que el driver devuelva objetos cambiaría el JSON de
+      todas las respuestas.
    ========================================================================== */
 
-import { DatabaseSync } from "node:sqlite";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import pg from "pg";
 import { config } from "../config.ts";
 
-const RUTA = resolve(process.cwd(), config.baseDatos);
-mkdirSync(dirname(RUTA), { recursive: true });
+const { Pool, types } = pg;
 
-export const db = new DatabaseSync(RUTA);
+/* --- timestamptz y timestamp como texto ISO, no como Date. --- */
+const OID_TIMESTAMPTZ = 1184;
+const OID_TIMESTAMP = 1114;
+const aISO = (valor: string | null): string | null =>
+  valor === null ? null : new Date(valor).toISOString();
+types.setTypeParser(OID_TIMESTAMPTZ, aISO);
+types.setTypeParser(OID_TIMESTAMP, aISO);
 
-/* WAL permite leer mientras se escribe. Sin esto, dos peticiones simultáneas
-   se bloquean entre sí. */
-db.exec("PRAGMA journal_mode = WAL");
-db.exec("PRAGMA foreign_keys = ON");
-db.exec("PRAGMA busy_timeout = 5000");
+/* Supabase exige TLS. Su certificado lo firma una CA propia que no está en el
+   almacén de Node, así que verificarlo contra el almacén del sistema falla.
+   La conexión sigue cifrada. En local (localhost) no hay TLS que negociar. */
+const esLocal = /localhost|127\.0\.0\.1/.test(config.databaseUrl);
+
+const pool = new Pool({
+  connectionString: config.databaseUrl,
+  ssl: esLocal ? false : { rejectUnauthorized: false },
+  max: config.poolMax,
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
+});
+
+/* Un error en una conexión ociosa no debe tumbar el proceso. */
+pool.on("error", (error) => {
+  console.error("error en conexión ociosa del pool:", error);
+});
 
 export const uuid = (): string => randomUUID();
 export const ahora = (): string => new Date().toISOString();
 
+export type SQLParam = string | number | boolean | null;
+
+/* ---------------------------------------------------------------------------
+   `?` → `$1, $2, ...`
+
+   Se recorre carácter por carácter en vez de usar un reemplazo global porque
+   un `?` dentro de una cadena literal no es un parámetro. Hoy ninguna consulta
+   tiene uno; el día que aparezca, esto ya lo contempla.
+   -------------------------------------------------------------------------- */
+function traducir(sql: string): string {
+  let salida = "";
+  let n = 0;
+  let enCadena = false;
+
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i];
+
+    if (c === "'") {
+      // '' dentro de una cadena es una comilla escapada, no el cierre.
+      if (enCadena && sql[i + 1] === "'") {
+        salida += "''";
+        i++;
+        continue;
+      }
+      enCadena = !enCadena;
+      salida += c;
+      continue;
+    }
+
+    if (c === "?" && !enCadena) {
+      salida += `$${++n}`;
+      continue;
+    }
+
+    salida += c;
+  }
+
+  return salida;
+}
+
+/* ---------------------------------------------------------------------------
+   Transacciones.
+
+   El problema: dentro de `enTransaccion` las rutas siguen llamando a
+   `consultarUno` y `ejecutar` sin recibir ningún cliente. Si cada una toma una
+   conexión distinta del pool, quedan fuera de la transacción y el ROLLBACK no
+   deshace nada: exactamente el bug que la transacción venía a evitar.
+
+   AsyncLocalStorage ata el cliente al contexto asíncrono, de modo que toda
+   consulta lanzada dentro del callback lo encuentra sola.
+   -------------------------------------------------------------------------- */
+const contexto = new AsyncLocalStorage<pg.PoolClient>();
+
+async function correr(sql: string, parametros: SQLParam[]): Promise<pg.QueryResult> {
+  const cliente = contexto.getStore();
+  if (cliente) return cliente.query(traducir(sql), parametros);
+  return pool.query(traducir(sql), parametros);
+}
+
 /* ---------------------------------------------------------------------------
    Frontera tipada entre SQL y el dominio.
 
-   El driver devuelve Record<string, SQLOutputValue>: no puede saber la forma
-   de cada consulta. Convertir eso a un tipo del dominio es una afirmación
-   nuestra, y estas dos funciones son el único lugar donde se hace. Tenerlas
-   concentradas acá significa que hay exactamente dos líneas para auditar
-   cuando el esquema cambie, en vez de una por consulta desparramada.
+   El driver devuelve filas sin forma conocida: no puede saber la de cada
+   consulta. Convertir eso a un tipo del dominio es una afirmación nuestra, y
+   estas funciones son el único lugar donde se hace.
    -------------------------------------------------------------------------- */
 
-export function consultarUno<T>(sql: string, ...parametros: SQLParam[]): T | undefined {
-  return db.prepare(sql).get(...parametros) as T | undefined;
+export async function consultarUno<T>(
+  sql: string,
+  ...parametros: SQLParam[]
+): Promise<T | undefined> {
+  const { rows } = await correr(sql, parametros);
+  return rows[0] as T | undefined;
 }
 
-export function consultarTodos<T>(sql: string, ...parametros: SQLParam[]): T[] {
-  return db.prepare(sql).all(...parametros) as T[];
+export async function consultarTodos<T>(sql: string, ...parametros: SQLParam[]): Promise<T[]> {
+  const { rows } = await correr(sql, parametros);
+  return rows as T[];
 }
 
-export function ejecutar(sql: string, ...parametros: SQLParam[]): { changes: number } {
-  const resultado = db.prepare(sql).run(...parametros);
-  return { changes: Number(resultado.changes) };
+export async function ejecutar(
+  sql: string,
+  ...parametros: SQLParam[]
+): Promise<{ changes: number }> {
+  const resultado = await correr(sql, parametros);
+  return { changes: resultado.rowCount ?? 0 };
 }
-
-type SQLParam = string | number | bigint | null | Uint8Array;
 
 /** Ejecuta varias sentencias como una unidad. Si algo falla, no queda a medias. */
-export function enTransaccion<T>(fn: () => T): T {
-  db.exec("BEGIN");
+export async function enTransaccion<T>(fn: () => Promise<T>): Promise<T> {
+  /* Anidar transacciones abriría una segunda conexión y rompería la atomicidad
+     de la primera. Si ya estamos dentro de una, se reutiliza. */
+  if (contexto.getStore()) return fn();
+
+  const cliente = await pool.connect();
   try {
-    const salida = fn();
-    db.exec("COMMIT");
+    await cliente.query("BEGIN");
+    const salida = await contexto.run(cliente, fn);
+    await cliente.query("COMMIT");
     return salida;
   } catch (error) {
-    db.exec("ROLLBACK");
+    await cliente.query("ROLLBACK").catch(() => {});
     throw error;
+  } finally {
+    cliente.release();
   }
 }
 
-export function migrar(): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS organizations (
-      id                  TEXT PRIMARY KEY,
-      name                TEXT NOT NULL,
-      slug                TEXT NOT NULL UNIQUE,
-      plan                TEXT NOT NULL DEFAULT 'free'
-                          CHECK (plan IN ('free','premium')),
-      subscription_status TEXT NOT NULL DEFAULT 'inactive'
-                          CHECK (subscription_status IN ('active','inactive')),
-      stripe_customer_id  TEXT UNIQUE,
-      created_at          TEXT NOT NULL,
-      updated_at          TEXT NOT NULL
-    );
+/** Cierra el pool. Sin esto, el proceso no termina al recibir SIGTERM. */
+export async function cerrar(): Promise<void> {
+  await pool.end();
+}
 
-    CREATE INDEX IF NOT EXISTS idx_org_stripe_customer
-      ON organizations (stripe_customer_id);
+/* ---------------------------------------------------------------------------
+   Esquema.
 
-    CREATE TABLE IF NOT EXISTS users (
-      id            TEXT PRIMARY KEY,
-      email         TEXT NOT NULL UNIQUE,
-      name          TEXT NOT NULL DEFAULT '',
-      password_hash TEXT NOT NULL,
-      created_at    TEXT NOT NULL
-    );
+   Es el mismo de sql/001_supabase.sql, sin las políticas de RLS ni los
+   disparadores, que se aplican una vez desde el editor de Supabase. Correrlo
+   al arrancar deja una base vacía lista sin pasos manuales, y sobre una que
+   ya existe no hace nada.
+   -------------------------------------------------------------------------- */
+export async function migrar(): Promise<void> {
+  await ejecutar(`create extension if not exists pgcrypto`);
 
-    CREATE TABLE IF NOT EXISTS organization_members (
-      organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-      user_id         TEXT NOT NULL REFERENCES users(id)         ON DELETE CASCADE,
-      role            TEXT NOT NULL DEFAULT 'member'
-                      CHECK (role IN ('owner','admin','member','viewer')),
-      created_at      TEXT NOT NULL,
-      PRIMARY KEY (organization_id, user_id)
-    );
+  await ejecutar(`
+    create table if not exists organizations (
+      id                  uuid primary key default gen_random_uuid(),
+      name                text        not null,
+      slug                text        not null unique,
+      plan                text        not null default 'free'
+                          check (plan in ('free','premium')),
+      subscription_status text        not null default 'inactive'
+                          check (subscription_status in ('active','inactive')),
+      stripe_customer_id  text unique,
+      created_at          timestamptz not null default now(),
+      updated_at          timestamptz not null default now()
+    )`);
 
-    CREATE INDEX IF NOT EXISTS idx_members_user ON organization_members (user_id);
-    CREATE INDEX IF NOT EXISTS idx_members_org  ON organization_members (organization_id);
+  await ejecutar(`
+    create index if not exists idx_org_stripe_customer
+      on organizations (stripe_customer_id)`);
 
-    CREATE TABLE IF NOT EXISTS boards (
-      id              TEXT PRIMARY KEY,
-      organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-      name            TEXT NOT NULL,
-      description     TEXT NOT NULL DEFAULT '',
-      position        INTEGER NOT NULL DEFAULT 0,
-      created_by      TEXT REFERENCES users(id) ON DELETE SET NULL,
-      created_at      TEXT NOT NULL,
-      updated_at      TEXT NOT NULL
-    );
+  await ejecutar(`
+    create table if not exists users (
+      id            uuid primary key default gen_random_uuid(),
+      email         text        not null unique,
+      name          text        not null default '',
+      password_hash text        not null,
+      created_at    timestamptz not null default now()
+    )`);
 
-    CREATE INDEX IF NOT EXISTS idx_boards_org ON boards (organization_id, position);
+  await ejecutar(`
+    create table if not exists organization_members (
+      organization_id uuid        not null references organizations(id) on delete cascade,
+      user_id         uuid        not null references users(id)         on delete cascade,
+      role            text        not null default 'member'
+                      check (role in ('owner','admin','member','viewer')),
+      created_at      timestamptz not null default now(),
+      primary key (organization_id, user_id)
+    )`);
 
-    CREATE TABLE IF NOT EXISTS columns (
-      id              TEXT PRIMARY KEY,
-      organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-      board_id        TEXT NOT NULL REFERENCES boards(id)        ON DELETE CASCADE,
-      name            TEXT NOT NULL,
-      position        INTEGER NOT NULL DEFAULT 0,
-      created_at      TEXT NOT NULL
-    );
+  await ejecutar(`create index if not exists idx_members_user on organization_members (user_id)`);
+  await ejecutar(`create index if not exists idx_members_org on organization_members (organization_id)`);
 
-    CREATE INDEX IF NOT EXISTS idx_columns_board ON columns (board_id, position);
-    CREATE INDEX IF NOT EXISTS idx_columns_org   ON columns (organization_id);
+  await ejecutar(`
+    create table if not exists boards (
+      id              uuid primary key default gen_random_uuid(),
+      organization_id uuid        not null references organizations(id) on delete cascade,
+      name            text        not null,
+      description     text        not null default '',
+      position        integer     not null default 0,
+      created_by      uuid        references users(id) on delete set null,
+      created_at      timestamptz not null default now(),
+      updated_at      timestamptz not null default now()
+    )`);
 
-    CREATE TABLE IF NOT EXISTS tasks (
-      id              TEXT PRIMARY KEY,
-      organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-      board_id        TEXT NOT NULL REFERENCES boards(id)        ON DELETE CASCADE,
-      column_id       TEXT NOT NULL REFERENCES columns(id)       ON DELETE CASCADE,
-      title           TEXT NOT NULL,
-      description     TEXT NOT NULL DEFAULT '',
-      priority        TEXT NOT NULL DEFAULT 'medium'
-                      CHECK (priority IN ('low','medium','high','urgent')),
-      position        INTEGER NOT NULL DEFAULT 0,
-      assignee_id     TEXT REFERENCES users(id) ON DELETE SET NULL,
-      due_date        TEXT,
-      created_by      TEXT REFERENCES users(id) ON DELETE SET NULL,
-      created_at      TEXT NOT NULL,
-      updated_at      TEXT NOT NULL
-    );
+  await ejecutar(`create index if not exists idx_boards_org on boards (organization_id, position)`);
 
-    CREATE INDEX IF NOT EXISTS idx_tasks_column ON tasks (column_id, position);
-    CREATE INDEX IF NOT EXISTS idx_tasks_board  ON tasks (board_id);
-    CREATE INDEX IF NOT EXISTS idx_tasks_org    ON tasks (organization_id);
-  `);
+  await ejecutar(`
+    create table if not exists columns (
+      id              uuid primary key default gen_random_uuid(),
+      organization_id uuid        not null references organizations(id) on delete cascade,
+      board_id        uuid        not null references boards(id)        on delete cascade,
+      name            text        not null,
+      position        integer     not null default 0,
+      created_at      timestamptz not null default now()
+    )`);
+
+  await ejecutar(`create index if not exists idx_columns_board on columns (board_id, position)`);
+  await ejecutar(`create index if not exists idx_columns_org on columns (organization_id)`);
+
+  await ejecutar(`
+    create table if not exists tasks (
+      id              uuid primary key default gen_random_uuid(),
+      organization_id uuid        not null references organizations(id) on delete cascade,
+      board_id        uuid        not null references boards(id)        on delete cascade,
+      column_id       uuid        not null references columns(id)       on delete cascade,
+      title           text        not null,
+      description     text        not null default '',
+      priority        text        not null default 'medium'
+                      check (priority in ('low','medium','high','urgent')),
+      position        integer     not null default 0,
+      assignee_id     uuid        references users(id) on delete set null,
+      due_date        timestamptz,
+      created_by      uuid        references users(id) on delete set null,
+      created_at      timestamptz not null default now(),
+      updated_at      timestamptz not null default now()
+    )`);
+
+  await ejecutar(`create index if not exists idx_tasks_column on tasks (column_id, position)`);
+  await ejecutar(`create index if not exists idx_tasks_board on tasks (board_id)`);
+  await ejecutar(`create index if not exists idx_tasks_org on tasks (organization_id)`);
 }

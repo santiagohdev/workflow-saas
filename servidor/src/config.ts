@@ -31,6 +31,14 @@ if (jwtSecret.length < 16) {
   );
 }
 
+const databaseUrl = texto("DATABASE_URL", "");
+if (!databaseUrl.startsWith("postgres")) {
+  throw new Error(
+    "DATABASE_URL falta o no es una cadena de PostgreSQL. " +
+      "En Supabase: Project Settings → Database → Connection string → URI.",
+  );
+}
+
 export const config = Object.freeze({
   puerto: entero("PORT", 4000),
   entorno: texto("NODE_ENV", "development"),
@@ -44,7 +52,12 @@ export const config = Object.freeze({
   jwtSecret,
   jwtExpiraHoras: entero("JWT_EXPIRA_HORAS", 12),
 
-  baseDatos: texto("BASE_DATOS", "datos/workflow.db"),
+  databaseUrl,
+
+  /* Supabase corta a 60 conexiones directas y los planes chicos de Render
+     levantan más de una instancia. Un pool holgado por instancia agota la
+     base antes de que el tráfico lo justifique. */
+  poolMax: entero("DB_POOL_MAX", 8),
 
   stripeWebhookSecret: texto("STRIPE_WEBHOOK_SECRET", "whsec_local_de_prueba"),
 

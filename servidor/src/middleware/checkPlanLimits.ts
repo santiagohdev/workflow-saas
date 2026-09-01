@@ -22,18 +22,28 @@ import { ErrorHttp, type RequestAuth } from "../tipos.ts";
 
 export type Recurso = "boards" | "members";
 
+/* COUNT() en PostgreSQL es bigint, y el driver lo entrega como texto para no
+   perder precisión al pasar por el rango seguro de number. Sin el Number()
+   explícito, `usado >= limite` compara una cadena y los límites del plan
+   dejan de aplicarse como corresponde. */
 interface Conteo {
-  n: number;
+  n: string;
 }
 
-export function contarTableros(orgId: string): number {
-  const fila = consultarUno<Conteo>("SELECT COUNT(*) AS n FROM boards WHERE organization_id = ?", orgId);
-  return fila?.n ?? 0;
+export async function contarTableros(orgId: string): Promise<number> {
+  const fila = await consultarUno<Conteo>(
+    "SELECT COUNT(*) AS n FROM boards WHERE organization_id = ?",
+    orgId,
+  );
+  return Number(fila?.n ?? 0);
 }
 
-export function contarMiembros(orgId: string): number {
-  const fila = consultarUno<Conteo>("SELECT COUNT(*) AS n FROM organization_members WHERE organization_id = ?", orgId);
-  return fila?.n ?? 0;
+export async function contarMiembros(orgId: string): Promise<number> {
+  const fila = await consultarUno<Conteo>(
+    "SELECT COUNT(*) AS n FROM organization_members WHERE organization_id = ?",
+    orgId,
+  );
+  return Number(fila?.n ?? 0);
 }
 
 /** Un plan premium solo cuenta como tal si la suscripción está activa. */
@@ -45,12 +55,16 @@ export function limiteDe(recurso: Recurso): number {
   return recurso === "boards" ? config.limiteTablerosGratis : config.limiteMiembrosGratis;
 }
 
-export function usoDe(recurso: Recurso, orgId: string): number {
+export function usoDe(recurso: Recurso, orgId: string): Promise<number> {
   return recurso === "boards" ? contarTableros(orgId) : contarMiembros(orgId);
 }
 
 export function checkPlanLimits(recurso: Recurso) {
-  return function verificarLimite(req: RequestAuth, _res: Response, next: NextFunction): void {
+  return async function verificarLimite(
+    req: RequestAuth,
+    _res: Response,
+    next: NextFunction,
+  ): Promise<void> {
     const org = req.organizacion;
     if (!org) {
       next(new ErrorHttp(500, "checkPlanLimits necesita ejecutarse después de requireRole."));
@@ -63,7 +77,16 @@ export function checkPlanLimits(recurso: Recurso) {
     }
 
     const limite = limiteDe(recurso);
-    const usado = usoDe(recurso, org.id);
+
+    /* Un fallo de la base acá no puede colarse como middleware que no llama a
+       next: la petición quedaría colgada hasta el timeout del cliente. */
+    let usado: number;
+    try {
+      usado = await usoDe(recurso, org.id);
+    } catch (error) {
+      next(error);
+      return;
+    }
 
     if (usado >= limite) {
       const queEs = recurso === "boards" ? "tableros" : "miembros";

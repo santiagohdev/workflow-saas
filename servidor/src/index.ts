@@ -15,14 +15,12 @@ import cors from "cors";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { config } from "./config.ts";
-import { migrar } from "./db/base.ts";
+import { cerrar, migrar } from "./db/base.ts";
 import { rutasAuth } from "./rutas/auth.ts";
 import { rutasOrganizaciones } from "./rutas/organizaciones.ts";
 import { rutasTableros } from "./rutas/tableros.ts";
 import { rutasStripe } from "./rutas/stripe.ts";
 import { manejarErrores, noEncontrado } from "./middleware/errores.ts";
-
-migrar();
 
 const app = express();
 
@@ -96,15 +94,24 @@ if (existsSync(RUTA_PANEL)) {
 app.use(noEncontrado);
 app.use(manejarErrores);
 
-const servidor = app.listen(config.puerto, () => {
-  console.log(`servidor escuchando en http://localhost:${config.puerto}  [${config.entorno}]`);
-});
+/* El esquema se aplica antes de aceptar tráfico. Levantar primero y migrar
+   después deja una ventana en la que las primeras peticiones fallan contra
+   tablas que todavía no existen. */
+const servidor = await migrar().then(() =>
+  app.listen(config.puerto, () => {
+    console.log(`servidor escuchando en http://localhost:${config.puerto}  [${config.entorno}]`);
+  }),
+);
 
 /* Cerrar ordenado: sin esto, un reinicio deja peticiones a medias. */
 for (const senal of ["SIGINT", "SIGTERM"] as const) {
   process.on(senal, () => {
     console.log(`\n${senal} recibida, cerrando...`);
-    servidor.close(() => process.exit(0));
+    servidor.close(() => {
+      /* El pool mantiene sockets abiertos: sin cerrarlo el proceso queda vivo
+         hasta que la plataforma lo mata por timeout. */
+      void cerrar().finally(() => process.exit(0));
+    });
   });
 }
 

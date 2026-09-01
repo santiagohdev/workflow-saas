@@ -8,7 +8,7 @@
    Ejecutar:  npm run semilla
    ========================================================================== */
 
-import { ahora, db, enTransaccion, migrar, uuid } from "./base.ts";
+import { ahora, cerrar, consultarUno, ejecutar, enTransaccion, migrar, uuid } from "./base.ts";
 import { hashear } from "../servicios/password.ts";
 
 const COLUMNAS = ["Por hacer", "En curso", "En revisión", "Hecho"] as const;
@@ -34,12 +34,11 @@ async function crearOrganizacion(
     hashes.set(persona.email, await hashear(persona.password));
   }
 
-  enTransaccion(() => {
-    db.prepare(
+  await enTransaccion(async () => {
+    await ejecutar(
       `INSERT INTO organizations
          (id, name, slug, plan, subscription_status, stripe_customer_id, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
       orgId,
       nombreOrg,
       slug,
@@ -54,71 +53,85 @@ async function crearOrganizacion(
 
     for (const { persona, rol } of gente) {
       let usuarioId: string;
-      const existente = db.prepare("SELECT id FROM users WHERE email = ?").get(persona.email) as
-        | { id: string }
-        | undefined;
+      const existente = await consultarUno<{ id: string }>(
+        "SELECT id FROM users WHERE email = ?",
+        persona.email,
+      );
 
       if (existente) {
         usuarioId = existente.id;
       } else {
         usuarioId = uuid();
-        db.prepare(
+        await ejecutar(
           `INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)`,
-        ).run(usuarioId, persona.email, persona.name, hashes.get(persona.email)!, momento);
+          usuarioId, persona.email, persona.name, hashes.get(persona.email)!, momento,
+        );
       }
 
       idsPorEmail.set(persona.email, usuarioId);
-      db.prepare(
+      await ejecutar(
         `INSERT INTO organization_members (organization_id, user_id, role, created_at)
          VALUES (?, ?, ?, ?)`,
-      ).run(orgId, usuarioId, rol, momento);
+        orgId, usuarioId, rol, momento,
+      );
     }
 
     const dueno = idsPorEmail.get(gente[0]!.persona.email)!;
 
-    tableros.forEach((tablero, indiceTablero) => {
+    /* for...of y no forEach en los tres niveles: el callback de forEach no se
+       espera, así que el COMMIT saldría antes de que terminen los INSERT y la
+       semilla quedaría a medias sin que nada avise. */
+    let indiceTablero = 0;
+    for (const tablero of tableros) {
       const boardId = uuid();
-      db.prepare(
+      await ejecutar(
         `INSERT INTO boards
            (id, organization_id, name, description, position, created_by, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(boardId, orgId, tablero.nombre, tablero.descripcion, indiceTablero, dueno, momento, momento);
+        boardId, orgId, tablero.nombre, tablero.descripcion, indiceTablero++, dueno, momento, momento,
+      );
 
       const columnaIds: string[] = [];
-      COLUMNAS.forEach((nombreColumna, i) => {
+      let i = 0;
+      for (const nombreColumna of COLUMNAS) {
         const columnaId = uuid();
         columnaIds.push(columnaId);
-        db.prepare(
+        await ejecutar(
           `INSERT INTO columns (id, organization_id, board_id, name, position, created_at)
            VALUES (?, ?, ?, ?, ?, ?)`,
-        ).run(columnaId, orgId, boardId, nombreColumna, i, momento);
-      });
+          columnaId, orgId, boardId, nombreColumna, i++, momento,
+        );
+      }
 
       const porColumna = new Map<number, number>();
-      tablero.tareas.forEach(([titulo, columna, prioridad]) => {
+      for (const [titulo, columna, prioridad] of tablero.tareas) {
         const destino = columnaIds[Math.min(columna, columnaIds.length - 1)]!;
         const pos = porColumna.get(columna) ?? 0;
         porColumna.set(columna, pos + 1);
 
-        db.prepare(
+        await ejecutar(
           `INSERT INTO tasks
              (id, organization_id, board_id, column_id, title, description, priority,
               position, assignee_id, due_date, created_by, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, NULL, ?, ?, ?)`,
-        ).run(uuid(), orgId, boardId, destino, titulo, prioridad, pos, dueno, dueno, momento, momento);
-      });
-    });
+          uuid(), orgId, boardId, destino, titulo, prioridad, pos, dueno, dueno, momento, momento,
+        );
+      }
+    }
   });
 
   console.log(`  ✓ ${nombreOrg}  (plan ${plan})  slug: ${slug}`);
 }
 
 async function main(): Promise<void> {
-  migrar();
+  await migrar();
 
-  const yaHay = db.prepare("SELECT COUNT(*) AS n FROM organizations").get() as { n: number };
-  if (yaHay.n > 0) {
-    console.log("La base ya tiene datos. Borrá datos/workflow.db si querés regenerarla.");
+  const yaHay = await consultarUno<{ n: string }>("SELECT COUNT(*) AS n FROM organizations");
+  if (Number(yaHay?.n ?? 0) > 0) {
+    console.log(
+      "La base ya tiene datos. Vaciá las tablas si querés regenerarla:\n" +
+        "  truncate organizations, users cascade;",
+    );
     return;
   }
 
@@ -195,3 +208,4 @@ async function main(): Promise<void> {
 }
 
 await main();
+await cerrar();

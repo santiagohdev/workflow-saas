@@ -3,7 +3,7 @@
    ========================================================================== */
 
 import { Router, type Response } from "express";
-import { ahora, db, uuid } from "../db/base.ts";
+import { ahora, consultarTodos, consultarUno, ejecutar, enTransaccion, uuid } from "../db/base.ts";
 import { autenticar } from "../middleware/autenticar.ts";
 import { requireRole } from "../middleware/requireRole.ts";
 import {
@@ -28,14 +28,14 @@ rutasOrganizaciones.get(
   "/:orgId/usage",
   autenticar,
   requireRole("viewer"),
-  (req: RequestAuth, res: Response, next) => {
+  async (req: RequestAuth, res: Response, next) => {
     try {
       const org = req.organizacion;
       if (!org) throw new ErrorHttp(500, "Falta la organización en la petición.");
 
       const efectivo = planEfectivo(org.plan, org.subscription_status);
-      const tableros = contarTableros(org.id);
-      const miembros = contarMiembros(org.id);
+      const tableros = await contarTableros(org.id);
+      const miembros = await contarMiembros(org.id);
 
       res.json({
         organizacion: {
@@ -75,12 +75,11 @@ rutasOrganizaciones.get(
   "/:orgId/members",
   autenticar,
   requireRole("viewer"),
-  (req: RequestAuth, res: Response, next) => {
+  async (req: RequestAuth, res: Response, next) => {
     try {
       const org = req.organizacion!;
-      const miembros = db
-        .prepare(
-          `SELECT u.id, u.email, u.name, m.role, m.created_at
+      const miembros = await consultarTodos(
+        `SELECT u.id, u.email, u.name, m.role, m.created_at
              FROM organization_members m
              JOIN users u ON u.id = m.user_id
             WHERE m.organization_id = ?
@@ -92,8 +91,8 @@ rutasOrganizaciones.get(
                 ELSE 4
               END,
               u.name`,
-        )
-        .all(org.id);
+        org.id,
+      );
       res.json({ miembros });
     } catch (error) {
       next(error);
@@ -110,7 +109,7 @@ rutasOrganizaciones.post(
   autenticar,
   requireRole("admin"),
   checkPlanLimits("members"),
-  (req: RequestAuth, res: Response, next) => {
+  async (req: RequestAuth, res: Response, next) => {
     try {
       const org = req.organizacion!;
       const cuerpo = req.body as Record<string, unknown>;
@@ -136,9 +135,7 @@ rutasOrganizaciones.post(
         );
       }
 
-      const usuario = db.prepare("SELECT * FROM users WHERE email = ?").get(email) as
-        | Usuario
-        | undefined;
+      const usuario = await consultarUno<Usuario>("SELECT * FROM users WHERE email = ?", email);
       if (!usuario) {
         throw new ErrorHttp(
           404,
@@ -147,17 +144,20 @@ rutasOrganizaciones.post(
         );
       }
 
-      const yaEsta = db
-        .prepare("SELECT 1 FROM organization_members WHERE organization_id = ? AND user_id = ?")
-        .get(org.id, usuario.id);
+      const yaEsta = await consultarUno(
+        "SELECT 1 FROM organization_members WHERE organization_id = ? AND user_id = ?",
+        org.id,
+        usuario.id,
+      );
       if (yaEsta) {
         throw new ErrorHttp(409, "Esa persona ya es miembro.", "ya_es_miembro");
       }
 
-      db.prepare(
+      await ejecutar(
         `INSERT INTO organization_members (organization_id, user_id, role, created_at)
          VALUES (?, ?, ?, ?)`,
-      ).run(org.id, usuario.id, rol, ahora());
+        org.id, usuario.id, rol, ahora(),
+      );
 
       res.status(201).json({
         miembro: { id: usuario.id, email: usuario.email, name: usuario.name, role: rol },
@@ -175,14 +175,16 @@ rutasOrganizaciones.delete(
   "/:orgId/members/:userId",
   autenticar,
   requireRole("admin"),
-  (req: RequestAuth, res: Response, next) => {
+  async (req: RequestAuth, res: Response, next) => {
     try {
       const org = req.organizacion!;
       const objetivo = req.params["userId"]!;
 
-      const membresia = db
-        .prepare("SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?")
-        .get(org.id, objetivo) as { role: Rol } | undefined;
+      const membresia = await consultarUno<{ role: Rol }>(
+        "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?",
+        org.id,
+        objetivo,
+      );
 
       if (!membresia) throw new ErrorHttp(404, "Esa persona no es miembro.", "no_miembro");
 
@@ -196,12 +198,13 @@ rutasOrganizaciones.delete(
 
       /* Una organización sin dueño queda sin nadie que pueda administrarla. */
       if (membresia.role === "owner") {
-        const owners = db
-          .prepare(
-            "SELECT COUNT(*) AS n FROM organization_members WHERE organization_id = ? AND role = 'owner'",
-          )
-          .get(org.id) as { n: number };
-        if (owners.n <= 1) {
+        const owners = await consultarUno<{ n: string }>(
+          "SELECT COUNT(*) AS n FROM organization_members WHERE organization_id = ? AND role = 'owner'",
+          org.id,
+        );
+        /* COUNT() vuelve como bigint y el driver lo entrega en texto para no
+           perder precisión. Comparar "1" <= 1 sin convertir da falso. */
+        if (Number(owners?.n ?? 0) <= 1) {
           throw new ErrorHttp(
             409,
             "No se puede quitar al único dueño. Nombrá otro dueño primero.",
@@ -210,7 +213,8 @@ rutasOrganizaciones.delete(
         }
       }
 
-      db.prepare("DELETE FROM organization_members WHERE organization_id = ? AND user_id = ?").run(
+      await ejecutar(
+        "DELETE FROM organization_members WHERE organization_id = ? AND user_id = ?",
         org.id,
         objetivo,
       );
@@ -226,7 +230,7 @@ rutasOrganizaciones.delete(
    POST /api/organizations
    Crea una organización adicional. Quien la crea queda como dueño.
    -------------------------------------------------------------------------- */
-rutasOrganizaciones.post("/", autenticar, (req: RequestAuth, res: Response, next) => {
+rutasOrganizaciones.post("/", autenticar, async (req: RequestAuth, res: Response, next) => {
   try {
     const cuerpo = req.body as Record<string, unknown>;
     const nombre = typeof cuerpo["name"] === "string" ? cuerpo["name"].trim() : "";
@@ -243,23 +247,29 @@ rutasOrganizaciones.post("/", autenticar, (req: RequestAuth, res: Response, next
 
     let slug = base;
     let n = 1;
-    while (db.prepare("SELECT 1 FROM organizations WHERE slug = ?").get(slug)) {
+    while (await consultarUno("SELECT 1 FROM organizations WHERE slug = ?", slug)) {
       slug = `${base}-${++n}`;
     }
 
     const id = uuid();
     const momento = ahora();
 
-    db.prepare(
-      `INSERT INTO organizations
-         (id, name, slug, plan, subscription_status, stripe_customer_id, created_at, updated_at)
-       VALUES (?, ?, ?, 'free', 'inactive', NULL, ?, ?)`,
-    ).run(id, nombre, slug, momento, momento);
+    /* La organización y su dueño van juntos: una organización sin dueño no la
+       puede administrar nadie. */
+    await enTransaccion(async () => {
+      await ejecutar(
+        `INSERT INTO organizations
+           (id, name, slug, plan, subscription_status, stripe_customer_id, created_at, updated_at)
+         VALUES (?, ?, ?, 'free', 'inactive', NULL, ?, ?)`,
+        id, nombre, slug, momento, momento,
+      );
 
-    db.prepare(
-      `INSERT INTO organization_members (organization_id, user_id, role, created_at)
-       VALUES (?, ?, 'owner', ?)`,
-    ).run(id, req.usuario!.sub, momento);
+      await ejecutar(
+        `INSERT INTO organization_members (organization_id, user_id, role, created_at)
+         VALUES (?, ?, 'owner', ?)`,
+        id, req.usuario!.sub, momento,
+      );
+    });
 
     res.status(201).json({ organizacion: { id, name: nombre, slug, role: "owner" } });
   } catch (error) {

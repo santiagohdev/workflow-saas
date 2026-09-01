@@ -13,7 +13,7 @@
    ========================================================================== */
 
 import { Router, type Request, type Response } from "express";
-import { ahora, consultarUno, db, uuid } from "../db/base.ts";
+import { ahora, consultarUno, ejecutar, uuid } from "../db/base.ts";
 import { config } from "../config.ts";
 import { firmarParaPrueba, verificarFirmaStripe } from "../servicios/stripeFirma.ts";
 import { autenticar } from "../middleware/autenticar.ts";
@@ -39,7 +39,7 @@ interface EventoStripe {
    endpoint de simulación local. Que ambos pasen por acá garantiza que lo que
    se prueba en desarrollo es exactamente lo que va a correr en producción.
    -------------------------------------------------------------------------- */
-function procesarEvento(evento: EventoStripe): { ok: boolean; tipo: string } {
+async function procesarEvento(evento: EventoStripe): Promise<{ ok: boolean; tipo: string }> {
   const tipo = evento.type ?? "";
   const objeto = evento.data?.object ?? {};
 
@@ -50,12 +50,13 @@ function procesarEvento(evento: EventoStripe): { ok: boolean; tipo: string } {
         const orgId = typeof metadata["organization_id"] === "string" ? metadata["organization_id"] : null;
         const customer = typeof objeto["customer"] === "string" ? objeto["customer"] : null;
         if (orgId) {
-          db.prepare(
+          await ejecutar(
             `UPDATE organizations
                 SET plan = 'premium', subscription_status = 'active',
                     stripe_customer_id = COALESCE(?, stripe_customer_id), updated_at = ?
               WHERE id = ?`,
-          ).run(customer, ahora(), orgId);
+            customer, ahora(), orgId,
+          );
         }
         break;
       }
@@ -66,11 +67,12 @@ function procesarEvento(evento: EventoStripe): { ok: boolean; tipo: string } {
         const estado = typeof objeto["status"] === "string" ? objeto["status"] : "";
         if (customer) {
           const activo = ESTADOS_ACTIVOS.has(estado);
-          db.prepare(
+          await ejecutar(
             `UPDATE organizations
                 SET plan = ?, subscription_status = ?, updated_at = ?
               WHERE stripe_customer_id = ?`,
-          ).run(activo ? "premium" : "free", activo ? "active" : "inactive", ahora(), customer);
+            activo ? "premium" : "free", activo ? "active" : "inactive", ahora(), customer,
+          );
         }
         break;
       }
@@ -80,11 +82,12 @@ function procesarEvento(evento: EventoStripe): { ok: boolean; tipo: string } {
         if (customer) {
           /* Se degrada a gratuito, no se borra nada. Los datos del cliente
              siguen ahí; lo que pierde es la capacidad de crear más. */
-          db.prepare(
+          await ejecutar(
             `UPDATE organizations
                 SET plan = 'free', subscription_status = 'inactive', updated_at = ?
               WHERE stripe_customer_id = ?`,
-          ).run(ahora(), customer);
+            ahora(), customer,
+          );
         }
         break;
       }
@@ -108,7 +111,7 @@ function procesarEvento(evento: EventoStripe): { ok: boolean; tipo: string } {
    en index.ts ANTES de express.json(), porque una vez que el cuerpo se parsea
    ya no se puede recuperar byte a byte y la firma deja de verificar.
    -------------------------------------------------------------------------- */
-rutasStripe.post("/stripe", (req: Request, res: Response) => {
+rutasStripe.post("/stripe", async (req: Request, res: Response) => {
   const crudo = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body ?? ""));
 
   const firma = verificarFirmaStripe(
@@ -131,7 +134,7 @@ rutasStripe.post("/stripe", (req: Request, res: Response) => {
     return;
   }
 
-  const resultado = procesarEvento(evento);
+  const resultado = await procesarEvento(evento);
   if (!resultado.ok) {
     res.status(500).json({ error: "Error procesando el evento." });
     return;
@@ -154,13 +157,14 @@ rutasStripe.post(
   "/:orgId/checkout",
   autenticar,
   requireRole("owner"),
-  (req: RequestAuth, res: Response, next) => {
+  async (req: RequestAuth, res: Response, next) => {
     try {
       const org = req.organizacion!;
 
       const customer = org.stripe_customer_id ?? `cus_sim_${uuid().replace(/-/g, "").slice(0, 14)}`;
 
-      db.prepare("UPDATE organizations SET stripe_customer_id = ?, updated_at = ? WHERE id = ?").run(
+      await ejecutar(
+        "UPDATE organizations SET stripe_customer_id = ?, updated_at = ? WHERE id = ?",
         customer,
         ahora(),
         org.id,
@@ -196,7 +200,7 @@ rutasStripe.post(
   "/:orgId/cancel",
   autenticar,
   requireRole("owner"),
-  (req: RequestAuth, res: Response, next) => {
+  async (req: RequestAuth, res: Response, next) => {
     try {
       const org = req.organizacion!;
       if (!org.stripe_customer_id) {
@@ -234,7 +238,7 @@ rutasStripe.post(
   "/:orgId/simular-webhook",
   autenticar,
   requireRole("owner"),
-  (req: RequestAuth, res: Response, next) => {
+  async (req: RequestAuth, res: Response, next) => {
     try {
       if (config.esProduccion) {
         throw new ErrorHttp(404, "Ruta no disponible.", "ruta_inexistente");
@@ -269,9 +273,9 @@ rutasStripe.get(
   "/:orgId",
   autenticar,
   requireRole("viewer"),
-  (req: RequestAuth, res: Response, next) => {
+  async (req: RequestAuth, res: Response, next) => {
     try {
-      const org = consultarUno<Organization>("SELECT * FROM organizations WHERE id = ?", req.organizacion!.id)!;
+      const org = (await consultarUno<Organization>("SELECT * FROM organizations WHERE id = ?", req.organizacion!.id))!;
       res.json({ facturacion: org });
     } catch (error) {
       next(error);

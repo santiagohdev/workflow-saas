@@ -10,7 +10,7 @@
     "dev": "node --experimental-strip-types --watch src/index.ts",
     "start": "node --experimental-strip-types src/index.ts",
     "semilla": "node --experimental-strip-types src/db/semilla.ts",
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test": "DATABASE_URL=postgres://prueba:prueba@localhost:5432/prueba JWT_SECRET=clave-de-prueba-suficientemente-larga node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "build:panel": "npm --prefix ../panel install && npm --prefix ../panel run build",
     "prod": "npm run build:panel && NODE_ENV=production node --experimental-strip-types src/index.ts"
@@ -18,12 +18,14 @@
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
     "typescript": "^5.7.2"
   }
 }

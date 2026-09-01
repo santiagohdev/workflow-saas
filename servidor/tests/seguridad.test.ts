@@ -8,8 +8,11 @@
    — producen accesos indebidos silenciosos.
    ========================================================================== */
 
-process.env["JWT_SECRET"] ??= "clave-de-prueba-suficientemente-larga";
-process.env["BASE_DATOS"] ??= "datos/test-seguridad.db";
+/* Las variables de entorno de estas pruebas se pasan en el script `test` del
+   package.json, no acá. Asignarlas en el cuerpo del archivo no funciona: ESM
+   eleva los import por encima de cualquier sentencia, así que config.ts ya se
+   evaluó —y ya validó— antes de que estas líneas corran. Antes parecía andar
+   solo porque dotenv levantaba el .env local. */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

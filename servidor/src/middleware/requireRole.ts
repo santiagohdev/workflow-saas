@@ -41,7 +41,11 @@ function organizacionDeLaPeticion(req: RequestAuth): string | null {
 }
 
 export function requireRole(minimo: Rol) {
-  return function verificarRol(req: RequestAuth, _res: Response, next: NextFunction): void {
+  return async function verificarRol(
+    req: RequestAuth,
+    _res: Response,
+    next: NextFunction,
+  ): Promise<void> {
     const usuario = req.usuario;
     if (!usuario) {
       next(new ErrorHttp(401, "Sesión no iniciada.", "sin_sesion"));
@@ -54,15 +58,21 @@ export function requireRole(minimo: Rol) {
       return;
     }
 
-    const membresia = consultarUno<Organization & { role: Rol }>(
+    let membresia: (Organization & { role: Rol }) | undefined;
+    try {
+      membresia = await consultarUno<Organization & { role: Rol }>(
       `SELECT m.role, o.id, o.name, o.slug, o.plan, o.subscription_status,
               o.stripe_customer_id, o.created_at, o.updated_at
          FROM organization_members m
          JOIN organizations o ON o.id = m.organization_id
         WHERE m.organization_id = ? AND m.user_id = ?`,
-      orgId,
-      usuario.sub,
-    );
+        orgId,
+        usuario.sub,
+      );
+    } catch (error) {
+      next(error);
+      return;
+    }
 
     /* No pertenece. Se responde 404 y no 403 a propósito: un 403 confirmaría
        que esa organización existe, y eso ya es información que no le

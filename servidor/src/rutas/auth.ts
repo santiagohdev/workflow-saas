@@ -8,7 +8,7 @@
    ========================================================================== */
 
 import { Router, type Response } from "express";
-import { ahora, consultarTodos, consultarUno, db, enTransaccion, uuid } from "../db/base.ts";
+import { ahora, consultarTodos, consultarUno, ejecutar, enTransaccion, uuid } from "../db/base.ts";
 import { hashear, verificar as verificarPassword } from "../servicios/password.ts";
 import { emitir } from "../servicios/jwt.ts";
 import { autenticar } from "../middleware/autenticar.ts";
@@ -42,7 +42,7 @@ function normalizarEmail(valor: unknown): string {
 }
 
 /** Convierte un nombre en un identificador de URL y le garantiza unicidad. */
-function generarSlug(nombre: string): string {
+async function generarSlug(nombre: string): Promise<string> {
   const base =
     nombre
       .toLowerCase()
@@ -54,7 +54,7 @@ function generarSlug(nombre: string): string {
 
   let candidato = base;
   let n = 1;
-  while (db.prepare("SELECT 1 FROM organizations WHERE slug = ?").get(candidato)) {
+  while (await consultarUno("SELECT 1 FROM organizations WHERE slug = ?", candidato)) {
     candidato = `${base}-${++n}`;
   }
   return candidato;
@@ -75,7 +75,7 @@ rutasAuth.post("/register", async (req, res, next) => {
       throw new ErrorHttp(400, "La contraseña debe tener al menos 8 caracteres.", "password_corta");
     }
 
-    if (db.prepare("SELECT 1 FROM users WHERE email = ?").get(email)) {
+    if (await consultarUno("SELECT 1 FROM users WHERE email = ?", email)) {
       throw new ErrorHttp(409, "Ya existe una cuenta con ese email.", "email_en_uso");
     }
 
@@ -83,24 +83,27 @@ rutasAuth.post("/register", async (req, res, next) => {
     const momento = ahora();
     const usuarioId = uuid();
     const orgId = uuid();
-    const slug = generarSlug(organizacion);
+    const slug = await generarSlug(organizacion);
 
-    enTransaccion(() => {
-      db.prepare(
+    await enTransaccion(async () => {
+      await ejecutar(
         `INSERT INTO users (id, email, name, password_hash, created_at)
          VALUES (?, ?, ?, ?, ?)`,
-      ).run(usuarioId, email, nombre, hash, momento);
+        usuarioId, email, nombre, hash, momento,
+      );
 
-      db.prepare(
+      await ejecutar(
         `INSERT INTO organizations
            (id, name, slug, plan, subscription_status, stripe_customer_id, created_at, updated_at)
          VALUES (?, ?, ?, 'free', 'inactive', NULL, ?, ?)`,
-      ).run(orgId, organizacion, slug, momento, momento);
+        orgId, organizacion, slug, momento, momento,
+      );
 
-      db.prepare(
+      await ejecutar(
         `INSERT INTO organization_members (organization_id, user_id, role, created_at)
          VALUES (?, ?, 'owner', ?)`,
-      ).run(orgId, usuarioId, momento);
+        orgId, usuarioId, momento,
+      );
     });
 
     const token = emitir({ sub: usuarioId, email, name: nombre });
@@ -127,7 +130,7 @@ rutasAuth.post("/login", async (req, res, next) => {
       throw new ErrorHttp(400, "Falta la contraseña.", "campo_faltante");
     }
 
-    const usuario = consultarUno<Usuario>("SELECT * FROM users WHERE email = ?", email);
+    const usuario = await consultarUno<Usuario>("SELECT * FROM users WHERE email = ?", email);
 
     /* Mismo mensaje para email inexistente y contraseña incorrecta: decir
        cuál de los dos falló permite averiguar qué emails están registrados. */
@@ -140,7 +143,7 @@ rutasAuth.post("/login", async (req, res, next) => {
     res.json({
       token,
       usuario: { id: usuario.id, email: usuario.email, name: usuario.name },
-      organizaciones: organizacionesDe(usuario.id),
+      organizaciones: await organizacionesDe(usuario.id),
     });
   } catch (error) {
     next(error);
@@ -150,27 +153,29 @@ rutasAuth.post("/login", async (req, res, next) => {
 /* --------------------------------------------------------------------------
    GET /api/auth/me
    -------------------------------------------------------------------------- */
-rutasAuth.get("/me", autenticar, (req: RequestAuth, res: Response, next) => {
+rutasAuth.get("/me", autenticar, async (req: RequestAuth, res: Response, next) => {
   try {
     const usuario = req.usuario;
     if (!usuario) throw new ErrorHttp(401, "Sesión no iniciada.", "sin_sesion");
 
-    const fila = consultarUno<Omit<Usuario, "password_hash">>(
+    const fila = await consultarUno<Omit<Usuario, "password_hash">>(
       "SELECT id, email, name, created_at FROM users WHERE id = ?",
       usuario.sub,
     );
 
     if (!fila) throw new ErrorHttp(401, "La cuenta ya no existe.", "sin_cuenta");
 
-    res.json({ usuario: fila, organizaciones: organizacionesDe(fila.id) });
+    res.json({ usuario: fila, organizaciones: await organizacionesDe(fila.id) });
   } catch (error) {
     next(error);
   }
 });
 
-export function organizacionesDe(
+export async function organizacionesDe(
   usuarioId: string,
-): Array<Pick<Organization, "id" | "name" | "slug" | "plan" | "subscription_status"> & { role: Rol }> {
+): Promise<
+  Array<Pick<Organization, "id" | "name" | "slug" | "plan" | "subscription_status"> & { role: Rol }>
+> {
   return consultarTodos<
     Pick<Organization, "id" | "name" | "slug" | "plan" | "subscription_status"> & { role: Rol }
   >(
