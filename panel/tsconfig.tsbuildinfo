@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/tipos.ts","./src/vite-env.d.ts","./src/componentes/facturacion.tsx","./src/componentes/kanban.tsx","./src/componentes/login.tsx","./src/componentes/miembros.tsx","./src/componentes/tableros.tsx"],"version":"5.9.3"}

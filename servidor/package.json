@@ -12,7 +12,7 @@
     "semilla": "node --experimental-strip-types src/db/semilla.ts",
     "test": "DATABASE_URL=postgres://prueba:prueba@localhost:5432/prueba JWT_SECRET=clave-de-prueba-suficientemente-larga node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "build:panel": "npm --prefix ../panel install && npm --prefix ../panel run build",
+    "build:panel": "npm --prefix ../panel install --include=dev && npm --prefix ../panel run build",
     "prod": "npm run build:panel && NODE_ENV=production node --experimental-strip-types src/index.ts"
   },
   "dependencies": {
