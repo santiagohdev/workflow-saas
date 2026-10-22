@@ -21,6 +21,14 @@ import { createHmac } from "node:crypto";
 import { hashear, verificar as verificarPassword } from "../src/servicios/password.ts";
 import { emitir, verificar as verificarToken } from "../src/servicios/jwt.ts";
 import { verificarFirmaStripe, firmarParaPrueba } from "../src/servicios/stripeFirma.ts";
+import {
+  MAX_FALLOS,
+  VENTANA_MS,
+  limpiarFallos,
+  registrarFallo,
+  segundosDeBloqueo,
+} from "../src/servicios/intentos.ts";
+import { esUuid } from "../src/tipos.ts";
 
 /* ==========================================================================
    Contraseñas
@@ -147,5 +155,55 @@ test("encabezados mal formados se rechazan sin romper", () => {
   const cuerpo = Buffer.from("{}");
   for (const cabecera of [undefined, "", "basura", "t=", "v1=abc", "t=abc,v1=def"]) {
     assert.equal(verificarFirmaStripe(cuerpo, cabecera, SECRETO).valido, false);
+  }
+});
+
+/* ==========================================================================
+   Límite de intentos de login
+   ========================================================================== */
+
+/* El registro vive en memoria y lo comparte todo el archivo: cada prueba usa
+   su propia clave para no heredar fallos de otra. */
+
+test("después del máximo de fallos, el login queda bloqueado", () => {
+  const clave = "bloqueo@test|1.1.1.1";
+  for (let i = 1; i < MAX_FALLOS; i++) {
+    registrarFallo(clave);
+    assert.equal(segundosDeBloqueo(clave), 0, `bloqueó antes de tiempo, en el fallo ${i}`);
+  }
+  registrarFallo(clave);
+  assert.ok(segundosDeBloqueo(clave) > 0);
+});
+
+test("un ingreso correcto borra los fallos anteriores", () => {
+  const clave = "limpia@test|1.1.1.1";
+  for (let i = 0; i < MAX_FALLOS; i++) registrarFallo(clave);
+  limpiarFallos(clave);
+  assert.equal(segundosDeBloqueo(clave), 0);
+});
+
+test("el bloqueo de una combinación no afecta a otra", () => {
+  const atacante = "victima@test|6.6.6.6";
+  for (let i = 0; i < MAX_FALLOS; i++) registrarFallo(atacante);
+  assert.ok(segundosDeBloqueo(atacante) > 0);
+  assert.equal(segundosDeBloqueo("victima@test|2.2.2.2"), 0, "la dueña de la cuenta quedó afuera");
+});
+
+test("el bloqueo vence pasada la ventana", () => {
+  const clave = "vence@test|1.1.1.1";
+  const inicio = Date.now();
+  for (let i = 0; i < MAX_FALLOS; i++) registrarFallo(clave, inicio);
+  assert.ok(segundosDeBloqueo(clave, inicio + 1000) > 0);
+  assert.equal(segundosDeBloqueo(clave, inicio + VENTANA_MS), 0);
+});
+
+/* ==========================================================================
+   Identificadores
+   ========================================================================== */
+
+test("solo un uuid pasa como identificador", () => {
+  assert.equal(esUuid("3f2b9c1e-8d4a-4f6b-9a7e-2c1d0b9e8f7a"), true);
+  for (const basura of ["", "abc", "1", "3f2b9c1e8d4a4f6b9a7e2c1d0b9e8f7a", "' OR 1=1 --", null, 42, undefined]) {
+    assert.equal(esUuid(basura), false, `aceptó: ${String(basura)}`);
   }
 });

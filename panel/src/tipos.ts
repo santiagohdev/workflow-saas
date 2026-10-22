@@ -51,6 +51,7 @@ export interface Tarea {
   position: number;
   assignee_id: string | null;
   due_date: string | null;
+  created_at: string;
 }
 
 export interface Miembro {

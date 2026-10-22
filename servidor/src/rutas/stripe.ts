@@ -18,12 +18,16 @@ import { config } from "../config.ts";
 import { firmarParaPrueba, verificarFirmaStripe } from "../servicios/stripeFirma.ts";
 import { autenticar } from "../middleware/autenticar.ts";
 import { requireRole } from "../middleware/requireRole.ts";
-import { ErrorHttp, type Organization, type RequestAuth } from "../tipos.ts";
+import { ErrorHttp, esUuid, type Organization, type RequestAuth } from "../tipos.ts";
 
 export const rutasStripe = Router();
 
 /* Los estados de Stripe que damos por buenos para habilitar premium. */
 const ESTADOS_ACTIVOS = new Set(["active", "trialing"]);
+
+/* Los únicos eventos que el panel necesita simular: el alta y la baja de la
+   suscripción de su propia organización. */
+const EVENTOS_SIMULABLES = new Set(["customer.subscription.updated", "customer.subscription.deleted"]);
 
 interface EventoStripe {
   id?: string;
@@ -47,7 +51,9 @@ async function procesarEvento(evento: EventoStripe): Promise<{ ok: boolean; tipo
     switch (tipo) {
       case "checkout.session.completed": {
         const metadata = (objeto["metadata"] ?? {}) as Record<string, unknown>;
-        const orgId = typeof metadata["organization_id"] === "string" ? metadata["organization_id"] : null;
+        /* Un id que no es uuid haría fallar la consulta, y Stripe reintenta
+           para siempre un evento que respondimos con error. */
+        const orgId = esUuid(metadata["organization_id"]) ? metadata["organization_id"] : null;
         const customer = typeof objeto["customer"] === "string" ? objeto["customer"] : null;
         if (orgId) {
           await ejecutar(
@@ -244,10 +250,30 @@ rutasStripe.post(
         throw new ErrorHttp(404, "Ruta no disponible.", "ruta_inexistente");
       }
 
+      const org = req.organizacion!;
       const cuerpo = req.body as Record<string, unknown>;
       const evento = cuerpo["evento"];
       if (!evento || typeof evento !== "object") {
         throw new ErrorHttp(400, "Falta el evento a simular.", "campo_faltante");
+      }
+
+      /* El evento lo manda el panel, así que es entrada del usuario y el
+         servidor lo va a firmar como si viniera de Stripe. Sin este control,
+         el dueño de una organización podría simular el alta o la baja de
+         OTRA cuyo identificador de cliente conozca —cualquier miembro lo ve
+         en la facturación—. Lo que se simula tiene que ser de esta. */
+      const { type, data } = evento as EventoStripe;
+      if (
+        !type ||
+        !EVENTOS_SIMULABLES.has(type) ||
+        !org.stripe_customer_id ||
+        data?.object?.["customer"] !== org.stripe_customer_id
+      ) {
+        throw new ErrorHttp(
+          403,
+          "Solo se puede simular el alta o la baja de la suscripción de esta organización.",
+          "evento_ajeno",
+        );
       }
 
       const crudo = Buffer.from(JSON.stringify(evento), "utf8");
@@ -258,7 +284,13 @@ rutasStripe.post(
         throw new ErrorHttp(500, `La firma simulada no verifica: ${verificacion.motivo}`);
       }
 
-      const resultado = procesarEvento(JSON.parse(crudo.toString("utf8")) as EventoStripe);
+      /* Se espera a que el evento quede aplicado antes de responder. El panel
+         recarga el plan apenas recibe la respuesta: si llegara antes que el
+         UPDATE, mostraría el plan viejo, y un fallo pasaría como éxito. */
+      const resultado = await procesarEvento(JSON.parse(crudo.toString("utf8")) as EventoStripe);
+      if (!resultado.ok) {
+        throw new ErrorHttp(500, "No se pudo aplicar el evento simulado.", "evento_no_aplicado");
+      }
       res.json({ simulado: true, ...resultado });
     } catch (error) {
       next(error);

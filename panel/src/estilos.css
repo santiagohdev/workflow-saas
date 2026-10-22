@@ -6,6 +6,10 @@
    ========================================================================== */
 
 :root {
+  /* Le avisa al navegador que la interfaz es oscura: sin esto, las barras de
+     desplazamiento y los controles nativos se dibujan en claro. */
+  color-scheme: dark;
+
   --fondo: #0f1117;
   --superficie: #161923;
   --superficie-2: #1d2130;
@@ -210,6 +214,7 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
   align-items: flex-start;
   overflow-x: auto;
   padding-bottom: 12px;
+  scrollbar-color: var(--linea) transparent;
 }
 
 .columna {
@@ -246,9 +251,11 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
   overflow-y: auto;
   flex: 1;
   min-height: 60px;
+  scrollbar-color: var(--linea) transparent;
 }
 
 .tarjeta {
+  position: relative;
   background: var(--superficie-2);
   border: 1px solid var(--linea);
   border-left: 3px solid var(--media);
@@ -260,6 +267,23 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 .tarjeta:hover { border-color: var(--texto-tenue); }
 .tarjeta:active { cursor: grabbing; }
 .tarjeta.arrastrando { opacity: 0.4; }
+
+/* Dónde va a caer la tarjeta que se arrastra: una línea en el hueco entre
+   dos. Es un seudoelemento para que marcarlo no corra las demás tarjetas
+   mientras se arrastra. */
+.tarjeta.destino-antes::before,
+.tarjeta.destino-despues::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--acento);
+  pointer-events: none;
+}
+.tarjeta.destino-antes::before { top: -6px; }
+.tarjeta.destino-despues::after { bottom: -6px; }
 .tarjeta.p-low    { border-left-color: var(--baja); }
 .tarjeta.p-medium { border-left-color: var(--media); }
 .tarjeta.p-high   { border-left-color: var(--alta); }

@@ -11,6 +11,7 @@ import { Router, type Response } from "express";
 import { ahora, consultarTodos, consultarUno, ejecutar, enTransaccion, uuid } from "../db/base.ts";
 import { hashear, verificar as verificarPassword } from "../servicios/password.ts";
 import { emitir } from "../servicios/jwt.ts";
+import { limpiarFallos, registrarFallo, segundosDeBloqueo } from "../servicios/intentos.ts";
 import { autenticar } from "../middleware/autenticar.ts";
 import {
   ErrorHttp,
@@ -130,14 +131,30 @@ rutasAuth.post("/login", async (req, res, next) => {
       throw new ErrorHttp(400, "Falta la contraseña.", "campo_faltante");
     }
 
+    /* El bloqueo se mira antes de verificar: un intento bloqueado no llega
+       a scrypt ni le cuesta CPU al servidor. */
+    const clave = `${email}|${req.ip ?? ""}`;
+    const espera = segundosDeBloqueo(clave);
+    if (espera > 0) {
+      const minutos = Math.ceil(espera / 60);
+      res.setHeader("Retry-After", String(espera));
+      throw new ErrorHttp(
+        429,
+        `Demasiados intentos fallidos. Probá de nuevo en ${minutos} ${minutos === 1 ? "minuto" : "minutos"}.`,
+        "demasiados_intentos",
+      );
+    }
+
     const usuario = await consultarUno<Usuario>("SELECT * FROM users WHERE email = ?", email);
 
     /* Mismo mensaje para email inexistente y contraseña incorrecta: decir
        cuál de los dos falló permite averiguar qué emails están registrados. */
-    const generico = new ErrorHttp(401, "Email o contraseña incorrectos.", "credenciales");
+    if (!usuario || !(await verificarPassword(contrasena, usuario.password_hash))) {
+      registrarFallo(clave);
+      throw new ErrorHttp(401, "Email o contraseña incorrectos.", "credenciales");
+    }
 
-    if (!usuario) throw generico;
-    if (!(await verificarPassword(contrasena, usuario.password_hash))) throw generico;
+    limpiarFallos(clave);
 
     const token = emitir({ sub: usuario.id, email: usuario.email, name: usuario.name });
     res.json({

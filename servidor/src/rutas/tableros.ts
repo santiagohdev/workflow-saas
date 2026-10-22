@@ -15,6 +15,7 @@ import { requireRole } from "../middleware/requireRole.ts";
 import { checkPlanLimits } from "../middleware/checkPlanLimits.ts";
 import {
   ErrorHttp,
+  esUuid,
   type Board,
   type Columna,
   type Prioridad,
@@ -26,6 +27,21 @@ export const rutasTableros = Router();
 
 const PRIORIDADES: readonly Prioridad[] = ["low", "medium", "high", "urgent"];
 const COLUMNAS_INICIALES = ["Por hacer", "En curso", "Hecho"] as const;
+
+/* Un identificador de la URL que no es uuid no puede existir: se responde
+   404 antes de consultar, en vez de dejar que PostgreSQL falle por el tipo y
+   salga un 500. */
+const NO_EXISTE = {
+  boardId: ["El tablero no existe.", "sin_tablero"],
+  columnId: ["La columna no existe.", "sin_columna"],
+  taskId: ["La tarea no existe.", "sin_tarea"],
+} as const;
+
+for (const [parametro, [mensaje, codigo]] of Object.entries(NO_EXISTE)) {
+  rutasTableros.param(parametro, (_req, _res, next, valor: unknown) => {
+    next(esUuid(valor) ? undefined : new ErrorHttp(404, mensaje, codigo));
+  });
+}
 
 function texto(valor: unknown, campo: string, max = 200): string {
   if (typeof valor !== "string" || valor.trim().length === 0) {
@@ -43,6 +59,31 @@ function opcional(valor: unknown, max = 2000): string {
   return valor.trim().slice(0, max);
 }
 
+/* La fecha llega como texto y, sin validar, PostgreSQL la rechaza al guardar:
+   el error salta en la base y sale como un 500, cuando el problema es del
+   pedido. Se valida acá y se guarda normalizada en ISO.
+
+   Además se controla que el día exista, porque JavaScript no rechaza las
+   fechas imposibles: convierte el 30 de febrero en 1 de marzo sin avisar. */
+function fechaOpcional(valor: unknown): string | null {
+  if (valor === undefined || valor === null || valor === "") return null;
+
+  const invalida = () =>
+    new ErrorHttp(400, "La fecha de vencimiento no es válida. Usá el formato AAAA-MM-DD.", "fecha_invalida");
+
+  if (typeof valor !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(valor)) throw invalida();
+
+  const [anio, mes, dia] = valor.slice(0, 10).split("-").map(Number) as [number, number, number];
+  const control = new Date(Date.UTC(anio, mes - 1, dia));
+  if (control.getUTCMonth() !== mes - 1 || control.getUTCDate() !== dia) throw invalida();
+
+  const fecha = new Date(valor);
+  if (Number.isNaN(fecha.getTime()) || anio < 1900 || fecha.getUTCFullYear() > 9999) {
+    throw invalida();
+  }
+  return fecha.toISOString();
+}
+
 async function siguientePosicion(
   tabla: "boards" | "columns" | "tasks",
   donde: string,
@@ -54,6 +95,39 @@ async function siguientePosicion(
     donde === columna ? valor : valor,
   );
   return Number(fila?.siguiente ?? 0);
+}
+
+/* Deja la tarea en el lugar pedido de su columna —0 es arriba de todo— y
+   renumera la columna entera: 0, 1, 2...
+
+   Correr solo las tareas de abajo no alcanza: las posiciones tienen huecos,
+   que quedan al borrar una tarea o al llevarla a otra columna, y entonces "el
+   tercer lugar" y "position = 2" dejan de ser lo mismo. Sin lugar pedido, la
+   tarea va al final.
+
+   Es una sola consulta para toda la columna, no un viaje a la base por
+   tarjeta. Tiene que correr dentro de la transacción del movimiento. */
+async function ubicarEnColumna(
+  taskId: string,
+  columnId: string,
+  orgId: string,
+  lugar: number | null,
+): Promise<void> {
+  const resto = await consultarTodos<{ id: string }>(
+    "SELECT id FROM tasks WHERE column_id = ? AND organization_id = ? AND id <> ? ORDER BY position, created_at",
+    columnId, orgId, taskId,
+  );
+
+  const orden = resto.map((t) => t.id);
+  orden.splice(Math.min(lugar ?? orden.length, orden.length), 0, taskId);
+
+  await ejecutar(
+    `UPDATE tasks AS t
+        SET position = v.lugar - 1
+       FROM jsonb_array_elements_text(?::jsonb) WITH ORDINALITY AS v(id, lugar)
+      WHERE t.id = v.id::uuid AND t.organization_id = ?`,
+    JSON.stringify(orden), orgId,
+  );
 }
 
 /* ==========================================================================
@@ -134,7 +208,7 @@ rutasTableros.get(
 
       const columnas = await consultarTodos<Columna>("SELECT * FROM columns WHERE board_id = ? AND organization_id = ? ORDER BY position", boardId, org.id);
 
-      const tareas = await consultarTodos<Tarea>("SELECT * FROM tasks WHERE board_id = ? AND organization_id = ? ORDER BY position", boardId, org.id);
+      const tareas = await consultarTodos<Tarea>("SELECT * FROM tasks WHERE board_id = ? AND organization_id = ? ORDER BY position, created_at", boardId, org.id);
 
       res.json({ tablero, columnas, tareas });
     } catch (error) {
@@ -295,21 +369,26 @@ rutasTableros.post(
 
       /* La columna tiene que existir, pertenecer a este tablero y a esta
          organización. Las tres condiciones en la misma consulta. */
-      const columna = await consultarUno("SELECT 1 FROM columns WHERE id = ? AND board_id = ? AND organization_id = ?", columnId, boardId, org.id);
+      const columna = esUuid(columnId)
+        ? await consultarUno("SELECT 1 FROM columns WHERE id = ? AND board_id = ? AND organization_id = ?", columnId, boardId, org.id)
+        : undefined;
       if (!columna) throw new ErrorHttp(404, "La columna no existe en este tablero.", "sin_columna");
 
       const asignado = typeof cuerpo["assignee_id"] === "string" ? cuerpo["assignee_id"] : null;
       if (asignado) {
-        const esMiembro = await consultarUno("SELECT 1 FROM organization_members WHERE organization_id = ? AND user_id = ?", org.id, asignado);
+        const esMiembro =
+          esUuid(asignado) &&
+          (await consultarUno("SELECT 1 FROM organization_members WHERE organization_id = ? AND user_id = ?", org.id, asignado));
         if (!esMiembro) {
           throw new ErrorHttp(400, "Solo se puede asignar a un miembro de la organización.", "no_miembro");
         }
       }
 
+      const vence = fechaOpcional(cuerpo["due_date"]);
+
       const id = uuid();
       const momento = ahora();
       const posicion = await siguientePosicion("tasks", "column_id", columnId);
-      const vence = typeof cuerpo["due_date"] === "string" ? cuerpo["due_date"] : null;
 
       await ejecutar(`INSERT INTO tasks
            (id, organization_id, board_id, column_id, title, description, priority,
@@ -327,7 +406,8 @@ rutasTableros.post(
   },
 );
 
-/** PATCH /api/boards/:boardId/tasks/:taskId — edita y también mueve entre columnas. */
+/** PATCH /api/boards/:boardId/tasks/:taskId — edita y también mueve.
+    `position` es el lugar dentro de la columna de destino, contando desde 0. */
 rutasTableros.patch(
   "/:boardId/tasks/:taskId",
   autenticar,
@@ -354,17 +434,20 @@ rutasTableros.patch(
 
       let columnId = actual.column_id;
       if (typeof cuerpo["column_id"] === "string" && cuerpo["column_id"] !== actual.column_id) {
-        const destino = await consultarUno("SELECT 1 FROM columns WHERE id = ? AND board_id = ? AND organization_id = ?", cuerpo["column_id"], boardId, org.id);
+        const destino = esUuid(cuerpo["column_id"])
+          ? await consultarUno("SELECT 1 FROM columns WHERE id = ? AND board_id = ? AND organization_id = ?", cuerpo["column_id"], boardId, org.id)
+          : undefined;
         if (!destino) throw new ErrorHttp(404, "La columna de destino no existe.", "sin_columna");
         columnId = cuerpo["column_id"];
       }
 
-      const posicion =
+      /* El panel sabe en qué lugar soltaron la tarjeta, no qué valor de
+         position tienen sus vecinas: por eso llega un lugar y no un número
+         para guardar tal cual. */
+      const lugar =
         typeof cuerpo["position"] === "number" && Number.isFinite(cuerpo["position"])
           ? Math.max(0, Math.trunc(cuerpo["position"]))
-          : columnId === actual.column_id
-            ? actual.position
-            : await siguientePosicion("tasks", "column_id", columnId);
+          : null;
 
       let asignado = actual.assignee_id;
       if ("assignee_id" in cuerpo) {
@@ -372,7 +455,9 @@ rutasTableros.patch(
         if (pedido === null) {
           asignado = null;
         } else if (typeof pedido === "string") {
-          const esMiembro = await consultarUno("SELECT 1 FROM organization_members WHERE organization_id = ? AND user_id = ?", org.id, pedido);
+          const esMiembro =
+            esUuid(pedido) &&
+            (await consultarUno("SELECT 1 FROM organization_members WHERE organization_id = ? AND user_id = ?", org.id, pedido));
           if (!esMiembro) {
             throw new ErrorHttp(400, "Solo se puede asignar a un miembro.", "no_miembro");
           }
@@ -380,19 +465,22 @@ rutasTableros.patch(
         }
       }
 
-      const vence =
-        "due_date" in cuerpo
-          ? typeof cuerpo["due_date"] === "string"
-            ? cuerpo["due_date"]
-            : null
-          : actual.due_date;
+      const vence = "due_date" in cuerpo ? fechaOpcional(cuerpo["due_date"]) : actual.due_date;
 
-      await ejecutar(`UPDATE tasks
-            SET title = ?, description = ?, priority = ?, column_id = ?,
-                position = ?, assignee_id = ?, due_date = ?, updated_at = ?
-          WHERE id = ? AND organization_id = ?`, 
-        titulo, descripcion, prioridad, columnId, posicion, asignado, vence, ahora(), taskId, org.id,
-      );
+      /* La edición y el reordenamiento van juntos: si el segundo falla, la
+         tarea no puede quedar cambiada de columna con una posición vieja. */
+      await enTransaccion(async () => {
+        await ejecutar(`UPDATE tasks
+              SET title = ?, description = ?, priority = ?, column_id = ?,
+                  assignee_id = ?, due_date = ?, updated_at = ?
+            WHERE id = ? AND organization_id = ?`,
+          titulo, descripcion, prioridad, columnId, asignado, vence, ahora(), taskId, org.id,
+        );
+
+        if (lugar !== null || columnId !== actual.column_id) {
+          await ubicarEnColumna(taskId, columnId, org.id, lugar);
+        }
+      });
 
       const tarea = (await consultarUno<Tarea>("SELECT * FROM tasks WHERE id = ?", taskId))!;
       res.json({ tarea });

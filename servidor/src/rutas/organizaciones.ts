@@ -14,11 +14,17 @@ import {
   planEfectivo,
 } from "../middleware/checkPlanLimits.ts";
 import { config } from "../config.ts";
-import { ErrorHttp, JERARQUIA, type RequestAuth, type Rol, type Usuario } from "../tipos.ts";
+import { ErrorHttp, JERARQUIA, esUuid, type RequestAuth, type Rol, type Usuario } from "../tipos.ts";
 
 export const rutasOrganizaciones = Router();
 
 const ROLES_VALIDOS: readonly Rol[] = ["owner", "admin", "member", "viewer"];
+
+/* Un usuario de la URL que no es uuid no puede ser miembro: 404 sin
+   consultar, en vez del 500 que da PostgreSQL al no poder leerlo como uuid. */
+rutasOrganizaciones.param("userId", (_req, _res, next, valor: unknown) => {
+  next(esUuid(valor) ? undefined : new ErrorHttp(404, "Esa persona no es miembro.", "no_miembro"));
+});
 
 /* --------------------------------------------------------------------------
    GET /api/organizations/:orgId/usage

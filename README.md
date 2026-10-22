@@ -5,20 +5,23 @@ organizaciones conviven en el mismo sistema sin verse entre sí, cada persona
 puede pertenecer a más de una con un rol distinto en cada una, y los límites de
 uso dependen del plan contratado.
 
-Corre entero en local, sin servicios externos y sin ninguna clave de API.
+Corre en local sin ninguna clave de API: alcanza con una base PostgreSQL, propia
+o el plan gratuito de Supabase.
 
-**Stack:** Node.js · TypeScript · Express · React · Vite · SQLite / PostgreSQL
+**Stack:** Node.js · TypeScript · Express · React · Vite · PostgreSQL
 
 ---
 
 ## Arrancar
 
-Hacen falta Node 22.5 o superior y nada más.
+Hacen falta Node 22.5 o superior y una base PostgreSQL: una local o un proyecto
+gratuito de Supabase. Su cadena de conexión va en `DATABASE_URL`, dentro de
+`servidor/.env`. Las tablas se crean solas al arrancar.
 
 ```bash
 # Backend
 cd servidor
-cp .env.example .env
+cp .env.example .env   # completar DATABASE_URL y JWT_SECRET
 npm install
 npm run semilla     # crea dos organizaciones de ejemplo
 npm start           # http://localhost:4000
@@ -40,6 +43,12 @@ npm run prod        # compila el panel y lo sirve desde http://localhost:4000
 Así queda todo en un único origen: sin CORS, sin dos procesos, y con el panel
 compilado y minificado. Es la forma en que conviene desplegarlo.
 
+En modo producción el servidor exige el secreto real del webhook de Stripe en
+`STRIPE_WEBHOOK_SECRET`, y no arranca con el valor de ejemplo, que está
+publicado en este repositorio. Para una demostración sin cobros reales va
+`DEMO_SIMULAR_PAGOS=true`: habilita el pago simulado del panel y el servidor usa
+un secreto aleatorio en cada arranque.
+
 ### Cuentas de prueba
 
 Contraseña para todas: `demo1234`
@@ -50,6 +59,7 @@ Contraseña para todas: `demo1234`
 | `bruno@estudionorte.test` | Estudio Norte | member | Crea tareas, no tableros |
 | `cami@estudionorte.test` | Estudio Norte | viewer | Solo lectura |
 | `dani@delta.test` | Delta Software | owner | Organización en plan premium |
+| `eli@delta.test` | Delta Software | admin | Gestiona miembros, no el plan |
 
 Estudio Norte y Delta Software están completamente separadas. Entrando con una
 cuenta no se ve absolutamente nada de la otra: es la garantía central del
@@ -94,6 +104,13 @@ completo sin cuenta y deja el mecanismo a la vista:
 - La comparación usa `timingSafeEqual`.
 - Los eventos con más de cinco minutos se rechazan, para que capturar un evento
   legítimo no sirva para reenviarlo indefinidamente.
+- En producción no arranca sin el secreto real: el de ejemplo está en este
+  repositorio, y con él cualquiera podría firmar un pago falso.
+
+El pago simulado de la demostración pasa por el mismo camino, con una
+restricción más: solo acepta el alta o la baja de la suscripción de la propia
+organización. El evento lo arma el navegador, y sin ese control el dueño de una
+organización podría dar de baja a otra cuyo identificador de cliente conozca.
 
 ### 3. Los límites se cuentan contra la base
 
@@ -131,16 +148,23 @@ owner, porque una organización sin dueño no la administra nadie.
 
 ## Base de datos
 
-El proyecto trae dos esquemas equivalentes:
+PostgreSQL. El esquema vive en dos lugares:
 
-- **`sql/001_supabase.sql`** — PostgreSQL para Supabase, con RLS y triggers.
-- **`servidor/src/db/base.ts`** — el mismo esquema sobre SQLite, que viene
-  incluido en Node.
+- **`servidor/src/db/base.ts`** — tablas e índices. Se aplican solos al
+  arrancar: una base vacía queda lista sin pasos manuales, y sobre una que ya
+  existe no hacen nada.
+- **`sql/001_supabase.sql`** — el mismo esquema más las políticas de RLS y los
+  triggers, para aplicar una vez desde el editor SQL de Supabase.
 
-Se eligió esta doble vía para que el proyecto arranque con un `npm install` y
-nada más. La aplicación no habla con el motor directamente sino con
-`consultarUno` / `consultarTodos` / `ejecutar`, que son la única frontera entre
-SQL y los tipos del dominio. Migrar a PostgreSQL es reemplazar ese archivo.
+La aplicación no habla con el driver directamente sino con `consultarUno` /
+`consultarTodos` / `ejecutar` / `enTransaccion`, que son la única frontera entre
+SQL y los tipos del dominio. Las consultas se escriben con `?` y esa capa las
+traduce a `$1, $2`; dentro de una transacción, todas usan la misma conexión sin
+recibirla como parámetro.
+
+Todos los identificadores son uuid. Uno mal formado se responde con 404 antes de
+consultar: si llegara a PostgreSQL, la consulta fallaría por el tipo de dato y
+saldría como un 500.
 
 ---
 
@@ -150,14 +174,15 @@ SQL y los tipos del dominio. Migrar a PostgreSQL es reemplazar ese archivo.
 cd servidor && npm test
 ```
 
-16 pruebas sobre las piezas de seguridad. No verifican "que la aplicación
+21 pruebas sobre las piezas de seguridad. No verifican "que la aplicación
 anda": verifican las garantías que, si se rompen, no se notan hasta que ya es
 tarde.
 
 Entre ellas, el rechazo de `alg:none` —la vulnerabilidad clásica de JWT, donde
 un atacante declara que el token no lleva firma y el verificador le cree—,
-tokens con contenido alterado, firmas de webhook sobre cuerpos modificados y
-eventos reenviados fuera de la ventana de tolerancia.
+tokens con contenido alterado, firmas de webhook sobre cuerpos modificados,
+eventos reenviados fuera de la ventana de tolerancia y el bloqueo después de
+varios intentos fallidos de login.
 
 ---
 
@@ -187,6 +212,7 @@ servidor/
       password.ts             scrypt con sal por usuario
       jwt.ts                  HS256 sobre node:crypto
       stripeFirma.ts          verificación HMAC-SHA256
+      intentos.ts             límite de intentos de login
 
 panel/
   src/
@@ -204,7 +230,9 @@ panel/
 
 ## Detalles de implementación
 
-**Arrastre sin librerías.** El Kanban usa la API nativa de HTML5. Mover una
+**Arrastre sin librerías.** El Kanban usa la API nativa de HTML5. La tarjeta
+cae donde se suelta —una línea marca el hueco—, en otra columna o dentro de la
+misma, y el servidor renumera la columna en una sola consulta. Mover una
 tarjeta actualiza el estado local antes de que el servidor responda, para que
 el cambio se vea al instante; si la petición falla se revierte y se avisa, en
 vez de dejar la interfaz mostrando algo que no ocurrió.
@@ -212,6 +240,11 @@ vez de dejar la interfaz mostrando algo que no ocurrió.
 **Contraseñas con scrypt**, incluido en `node:crypto`, con sal por usuario y
 comparación de tiempo constante. Sin sal, dos personas con la misma contraseña
 producirían el mismo hash.
+
+**Límite de intentos de login.** Después de 5 fallos seguidos, esa combinación
+de email e IP queda bloqueada 15 minutos y recibe un 429 con `Retry-After`. Con
+la IP en la clave, nadie puede dejar sin acceso a otra persona fallando a
+propósito con su email.
 
 **Un tablero nuevo nace con sus columnas** en la misma transacción. Un tablero
 vacío no le sirve a nadie.

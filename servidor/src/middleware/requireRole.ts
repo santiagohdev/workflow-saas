@@ -20,6 +20,7 @@ import { consultarUno } from "../db/base.ts";
 import {
   ErrorHttp,
   JERARQUIA,
+  esUuid,
   type Organization,
   type RequestAuth,
   type Rol,
@@ -58,20 +59,24 @@ export function requireRole(minimo: Rol) {
       return;
     }
 
+    /* Un identificador mal formado no es de ninguna organización: queda sin
+       membresía y recibe el mismo 404 que quien no es miembro, sin consultar. */
     let membresia: (Organization & { role: Rol }) | undefined;
-    try {
-      membresia = await consultarUno<Organization & { role: Rol }>(
-      `SELECT m.role, o.id, o.name, o.slug, o.plan, o.subscription_status,
-              o.stripe_customer_id, o.created_at, o.updated_at
-         FROM organization_members m
-         JOIN organizations o ON o.id = m.organization_id
-        WHERE m.organization_id = ? AND m.user_id = ?`,
-        orgId,
-        usuario.sub,
-      );
-    } catch (error) {
-      next(error);
-      return;
+    if (esUuid(orgId)) {
+      try {
+        membresia = await consultarUno<Organization & { role: Rol }>(
+        `SELECT m.role, o.id, o.name, o.slug, o.plan, o.subscription_status,
+                o.stripe_customer_id, o.created_at, o.updated_at
+           FROM organization_members m
+           JOIN organizations o ON o.id = m.organization_id
+          WHERE m.organization_id = ? AND m.user_id = ?`,
+          orgId,
+          usuario.sub,
+        );
+      } catch (error) {
+        next(error);
+        return;
+      }
     }
 
     /* No pertenece. Se responde 404 y no 403 a propósito: un 403 confirmaría

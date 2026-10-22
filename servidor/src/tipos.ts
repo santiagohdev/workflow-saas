@@ -119,3 +119,13 @@ export class ErrorHttp extends Error {
     this.codigo = codigo;
   }
 }
+
+/* Todos los identificadores son uuid en la base. Un texto con otra forma no
+   puede corresponder a ningún registro, y si llega a PostgreSQL la consulta
+   falla por el tipo de dato: sale como un 500 cuando en realidad es "no
+   existe". Se controla antes de consultar. */
+const FORMATO_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function esUuid(valor: unknown): valor is string {
+  return typeof valor === "string" && FORMATO_UUID.test(valor);
+}
