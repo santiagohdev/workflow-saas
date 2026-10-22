@@ -6,7 +6,7 @@ puede pertenecer a más de una con un rol distinto en cada una, y los límites d
 uso dependen del plan contratado.
 
 Corre en local sin ninguna clave de API: alcanza con una base PostgreSQL, propia
-o el plan gratuito de Supabase.
+o el plan gratuito de Supabase, o con la base embebida que trae el servidor.
 
 **Stack:** Node.js · TypeScript · Express · React · Vite · PostgreSQL
 
@@ -17,6 +17,9 @@ o el plan gratuito de Supabase.
 Hacen falta Node 22.5 o superior y una base PostgreSQL: una local o un proyecto
 gratuito de Supabase. Su cadena de conexión va en `DATABASE_URL`, dentro de
 `servidor/.env`. Las tablas se crean solas al arrancar.
+
+Para probarlo sin ninguna base, `BASE_EMBEBIDA=true` levanta un PostgreSQL en
+memoria con las cuentas de prueba ya cargadas.
 
 ```bash
 # Backend
@@ -51,20 +54,23 @@ un secreto aleatorio en cada arranque.
 
 ### Que la demo no se apague
 
-En los planes gratuitos, Render duerme la instancia después de 15 minutos sin
-tráfico, y Supabase pausa el proyecto después de una semana sin actividad en la
-base. Un proyecto pausado no vuelve solo: hay que restaurarlo desde el panel de
-Supabase.
+La demo pública corre con `BASE_EMBEBIDA=true`: un PostgreSQL embebido (PGlite,
+compilado a WebAssembly) dentro del mismo proceso. Así no depende de un
+proyecto externo: Supabase pausa los proyectos gratuitos después de una semana
+sin actividad, y uno pausado no vuelve solo. La base vive en memoria y se carga
+con las cuentas de prueba en cada inicio, así que lo que cambien los visitantes
+se descarta en el próximo reinicio.
 
-`GET /api/health` consulta la base y responde 503 si no llega. El workflow
-`.github/workflows/mantener-activa.yml` lo llama cada 5 minutos: así se
-mantienen despiertas las dos cosas, y si algo se cae, GitHub avisa por mail.
-Deja tres horas por noche sin consultas para no pasar de las 750 horas
-gratuitas que Render da por mes a toda la cuenta.
+En el plan gratuito, Render duerme la instancia después de 15 minutos sin
+tráfico. El workflow `.github/workflows/mantener-activa.yml` llama a
+`/api/health` cada 5 minutos para que no se duerma, y si algo se cae, GitHub
+avisa por mail. Deja tres horas por noche sin consultas para no pasar de las
+750 horas gratuitas que Render da por mes a toda la cuenta.
 
-Si la base no responde al arrancar, el servidor levanta igual: el panel carga,
-la API contesta 503 con un mensaje claro y la conexión se reintenta sola hasta
-que la base vuelve.
+`/api/health` consulta la base y responde 503 si no llega. Si la base no
+responde al arrancar, el servidor levanta igual: el panel carga, la API
+contesta 503 con un mensaje claro y la conexión se reintenta sola hasta que la
+base vuelve.
 
 ### Cuentas de prueba
 
@@ -217,6 +223,7 @@ servidor/
     config.ts                 configuración validada al arrancar
     tipos.ts                  tipos del dominio
     db/base.ts                capa de datos y frontera tipada
+    db/embebida.ts            PostgreSQL en memoria para la demo
     db/semilla.ts             datos de demostración
     middleware/
       autenticar.ts           quién es

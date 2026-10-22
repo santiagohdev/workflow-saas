@@ -21,6 +21,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { config } from "../config.ts";
+import { cerrarBaseEmbebida, iniciarBaseEmbebida } from "./embebida.ts";
 
 const { Pool, types } = pg;
 
@@ -35,12 +36,16 @@ types.setTypeParser(OID_TIMESTAMP, aISO);
 /* Supabase exige TLS. Su certificado lo firma una CA propia que no está en el
    almacén de Node, así que verificarlo contra el almacén del sistema falla.
    La conexión sigue cifrada. En local (localhost) no hay TLS que negociar. */
-const esLocal = /localhost|127\.0\.0\.1/.test(config.databaseUrl);
+const urlBase = config.baseEmbebida ? await iniciarBaseEmbebida() : config.databaseUrl;
+const esLocal = /localhost|127\.0\.0\.1/.test(urlBase);
 
 const pool = new Pool({
-  connectionString: config.databaseUrl,
+  connectionString: urlBase,
   ssl: esLocal ? false : { rejectUnauthorized: false },
-  max: config.poolMax,
+  /* La base embebida tiene una sola sesión para todas las conexiones: con dos,
+     la consulta de una petición podría caer dentro de la transacción de otra.
+     Una conexión las pone en fila. */
+  max: config.baseEmbebida ? 1 : config.poolMax,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 10_000,
 });
@@ -164,6 +169,7 @@ export async function enTransaccion<T>(fn: () => Promise<T>): Promise<T> {
 /** Cierra el pool. Sin esto, el proceso no termina al recibir SIGTERM. */
 export async function cerrar(): Promise<void> {
   await pool.end();
+  await cerrarBaseEmbebida();
 }
 
 /** Lee una fila de una tabla de la aplicación. Nunca lanza: la usa el chequeo

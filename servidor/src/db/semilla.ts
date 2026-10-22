@@ -6,8 +6,12 @@
    iniciando sesión con una cuenta e intentando leer los tableros de la otra.
 
    Ejecutar:  npm run semilla
+
+   El servidor también la importa: con la base embebida (BASE_EMBEBIDA=true)
+   la carga en cada arranque, porque esa base empieza vacía.
    ========================================================================== */
 
+import { fileURLToPath } from "node:url";
 import { ahora, cerrar, consultarUno, ejecutar, enTransaccion, migrar, uuid } from "./base.ts";
 import { hashear } from "../servicios/password.ts";
 
@@ -123,17 +127,11 @@ async function crearOrganizacion(
   console.log(`  ✓ ${nombreOrg}  (plan ${plan})  slug: ${slug}`);
 }
 
-async function main(): Promise<void> {
-  await migrar();
-
+/** Carga las dos organizaciones de ejemplo. Si la base ya tiene datos no toca
+    nada y devuelve false. Espera el esquema ya aplicado. */
+export async function cargarDatosDemo(): Promise<boolean> {
   const yaHay = await consultarUno<{ n: string }>("SELECT COUNT(*) AS n FROM organizations");
-  if (Number(yaHay?.n ?? 0) > 0) {
-    console.log(
-      "La base ya tiene datos. Vaciá las tablas si querés regenerarla:\n" +
-        "  truncate organizations, users cascade;",
-    );
-    return;
-  }
+  if (Number(yaHay?.n ?? 0) > 0) return false;
 
   console.log("Creando datos de demostración...\n");
 
@@ -205,7 +203,18 @@ async function main(): Promise<void> {
   console.log(
     "\nSon organizaciones separadas: entrando con una cuenta no se ve nada de la otra.\n",
   );
+  return true;
 }
 
-await main();
-await cerrar();
+/* Solo cuando se ejecuta como script. Importada desde el servidor, cerrar el
+   pool al final lo dejaría sin base. */
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  await migrar();
+  if (!(await cargarDatosDemo())) {
+    console.log(
+      "La base ya tiene datos. Vaciá las tablas si querés regenerarla:\n" +
+        "  truncate organizations, users cascade;",
+    );
+  }
+  await cerrar();
+}

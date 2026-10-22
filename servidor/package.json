@@ -16,6 +16,8 @@
     "prod": "npm run build:panel && NODE_ENV=production node --experimental-strip-types src/index.ts"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.11",
+    "@electric-sql/pglite-socket": "^0.2.14",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",

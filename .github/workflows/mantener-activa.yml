@@ -1,8 +1,10 @@
 name: Mantener la demo activa
 
-# Render duerme la instancia gratuita a los 15 minutos sin tráfico, y Supabase
-# pausa el proyecto gratuito después de una semana sin actividad en la base.
-# /api/health pasa por la base, así que consultarlo seguido evita las dos cosas.
+# Render duerme la instancia gratuita a los 15 minutos sin tráfico, y la primera
+# visita después espera cerca de un minuto. Consultar /api/health seguido la
+# mantiene despierta. El chequeo pasa por la base, así que con una base externa
+# como Supabase, que pausa los proyectos gratuitos tras una semana sin
+# actividad, también la mantiene activa.
 #
 # Entre las 4 y las 7 UTC (de 1 a 4 de la mañana en Argentina) no se consulta:
 # Render da 750 horas gratis por mes para todos los servicios de la cuenta, y

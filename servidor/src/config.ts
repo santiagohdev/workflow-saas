@@ -32,8 +32,13 @@ if (jwtSecret.length < 16) {
   );
 }
 
+/* La demostración pública corre con la base embebida (ver db/embebida.ts):
+   así no depende de un proyecto externo que se pueda pausar. Con ella no hace
+   falta DATABASE_URL, y si está, se ignora. */
+const baseEmbebida = texto("BASE_EMBEBIDA", "") === "true";
+
 const databaseUrl = texto("DATABASE_URL", "");
-if (!databaseUrl.startsWith("postgres")) {
+if (!baseEmbebida && !databaseUrl.startsWith("postgres")) {
   throw new Error(
     "DATABASE_URL falta o no es una cadena de PostgreSQL. " +
       "En Supabase: Project Settings → Database → Connection string → URI.",
@@ -78,6 +83,7 @@ export const config = Object.freeze({
   jwtExpiraHoras: entero("JWT_EXPIRA_HORAS", 12),
 
   databaseUrl,
+  baseEmbebida,
 
   /* Supabase corta a 60 conexiones directas y los planes chicos de Render
      levantan más de una instancia. Un pool holgado por instancia agota la

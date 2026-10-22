@@ -16,6 +16,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { config } from "./config.ts";
 import { baseResponde, cerrar, migrar } from "./db/base.ts";
+import { cargarDatosDemo } from "./db/semilla.ts";
 import { rutasAuth } from "./rutas/auth.ts";
 import { rutasOrganizaciones } from "./rutas/organizaciones.ts";
 import { rutasTableros } from "./rutas/tableros.ts";
@@ -133,6 +134,9 @@ app.use(manejarErrores);
 async function prepararBase(): Promise<boolean> {
   try {
     await migrar();
+    /* La base embebida arranca vacía: sin los datos de ejemplo, la demo no
+       tendría con qué entrar. */
+    if (config.baseEmbebida) await cargarDatosDemo();
     baseLista = true;
     return true;
   } catch (error) {
