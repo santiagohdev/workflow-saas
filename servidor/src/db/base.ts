@@ -46,7 +46,11 @@ const pool = new Pool({
      la consulta de una petición podría caer dentro de la transacción de otra.
      Una conexión las pone en fila. */
   max: config.baseEmbebida ? 1 : config.poolMax,
-  idleTimeoutMillis: 30_000,
+  /* Con la base embebida, esa conexión no se cierra por inactividad. Si una
+     conexión se corta con error, el servidor de socket de PGlite la sigue
+     contando como abierta y termina rechazando las nuevas: una conexión que no
+     se cierra no hay que reabrirla. */
+  idleTimeoutMillis: config.baseEmbebida ? 0 : 30_000,
   connectionTimeoutMillis: 10_000,
 });
 

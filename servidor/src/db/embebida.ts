@@ -62,7 +62,10 @@ export async function iniciarBaseEmbebida(): Promise<string> {
       "-c", "maintenance_work_mem=8MB",
     ],
   });
-  const servidor = new PGLiteSocketServer({ db, host: "127.0.0.1", port: PUERTO });
+  /* El límite por defecto es una conexión, y una que se corta con error queda
+     contada para siempre (ver base.ts). Con margen, un corte no deja a la
+     demo sin base. */
+  const servidor = new PGLiteSocketServer({ db, host: "127.0.0.1", port: PUERTO, maxConnections: 8 });
   await servidor.start();
 
   detener = async () => {
