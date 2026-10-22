@@ -69,10 +69,14 @@ cerca de 370 MB. Si cambian el esquema o los datos de ejemplo, se regenera con
 `npm run demo:imagen`.
 
 En el plan gratuito, Render duerme la instancia después de 15 minutos sin
-tráfico. El workflow `.github/workflows/mantener-activa.yml` llama a
-`/api/health` cada 5 minutos para que no se duerma, y si algo se cae, GitHub
-avisa por mail. Deja tres horas por noche sin consultas para no pasar de las
-750 horas gratuitas que Render da por mes a toda la cuenta.
+tráfico. Mientras está levantado, el servidor se consulta a sí mismo cada 5
+minutos por su URL pública (`RENDER_EXTERNAL_URL`, que Render define sola), y
+eso cuenta como tráfico. El workflow `.github/workflows/mantener-activa.yml`
+llama a `/api/health` cada 5 minutos: si la instancia igual se durmió, la
+despierta, y si algo se cae, GitHub avisa por mail. No alcanza solo con el
+workflow porque GitHub atrasa seguido las tareas programadas más de 15 minutos.
+Los dos dejan tres horas por noche sin consultas (de 4 a 7 UTC) para no pasar
+de las 750 horas gratuitas que Render da por mes a toda la cuenta.
 
 `/api/health` consulta la base y responde 503 si no llega. Si la base no
 responde al arrancar, el servidor levanta igual: el panel carga, la API

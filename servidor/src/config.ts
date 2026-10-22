@@ -85,6 +85,10 @@ export const config = Object.freeze({
   databaseUrl,
   baseEmbebida,
 
+  /* Render la define en cada servicio web con su URL pública; fuera de Render
+     queda vacía. La usa la consulta propia del final de index.ts. */
+  urlPublica: texto("RENDER_EXTERNAL_URL", ""),
+
   /* Supabase corta a 60 conexiones directas y los planes chicos de Render
      levantan más de una instancia. Un pool holgado por instancia agota la
      base antes de que el tráfico lo justifique. */

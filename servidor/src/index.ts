@@ -163,6 +163,39 @@ const servidor = app.listen(config.puerto, () => {
   console.log(`servidor escuchando en http://localhost:${config.puerto}  [${config.entorno}]`);
 });
 
+/* --------------------------------------------------------------------------
+   Que Render no la duerma.
+
+   Render apaga la instancia gratuita a los 15 minutos sin tráfico entrante.
+   El workflow mantener-activa la consulta cada 5 minutos, pero GitHub atrasa
+   seguido las tareas programadas más que eso. Mientras está levantado, el
+   servidor se consulta a sí mismo por la URL pública: la petición da la vuelta
+   por internet, entra por donde entra una visita y cuenta como tráfico. El
+   workflow queda para despertarlo cuando igual se durmió.
+
+   De 4 a 7 UTC no se consulta, igual que en el workflow: las 750 horas
+   gratuitas de Render por mes son para todos los servicios de la cuenta.
+   -------------------------------------------------------------------------- */
+const MINUTOS_ENTRE_CONSULTAS = 5;
+const HORAS_SIN_CONSULTAS_UTC = [4, 5, 6];
+
+if (config.urlPublica) {
+  setInterval(async () => {
+    if (HORAS_SIN_CONSULTAS_UTC.includes(new Date().getUTCHours())) return;
+    try {
+      const respuesta = await fetch(`${config.urlPublica}/api/health`, {
+        signal: AbortSignal.timeout(30_000),
+      });
+      await respuesta.body?.cancel();
+      if (!respuesta.ok) console.error(`la consulta propia devolvió ${respuesta.status}`);
+    } catch (error) {
+      console.error("la consulta propia falló:", error instanceof Error ? error.message : error);
+    }
+  }, MINUTOS_ENTRE_CONSULTAS * 60_000).unref();
+
+  console.log(`consulta propia cada ${MINUTOS_ENTRE_CONSULTAS} min a ${config.urlPublica}`);
+}
+
 /* Cerrar ordenado: sin esto, un reinicio deja peticiones a medias. */
 for (const senal of ["SIGINT", "SIGTERM"] as const) {
   process.on(senal, () => {
