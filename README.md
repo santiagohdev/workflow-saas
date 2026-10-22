@@ -56,9 +56,11 @@ tráfico, y Supabase pausa el proyecto después de una semana sin actividad en l
 base. Un proyecto pausado no vuelve solo: hay que restaurarlo desde el panel de
 Supabase.
 
-`GET /api/health` consulta la base y responde 503 si no llega. Un monitor
-gratuito, como UptimeRobot o cron-job.org, que lo llame cada 5 minutos mantiene
-despiertas las dos cosas y avisa por mail si algo se cae.
+`GET /api/health` consulta la base y responde 503 si no llega. El workflow
+`.github/workflows/mantener-activa.yml` lo llama cada 5 minutos: así se
+mantienen despiertas las dos cosas, y si algo se cae, GitHub avisa por mail.
+Deja tres horas por noche sin consultas para no pasar de las 750 horas
+gratuitas que Render da por mes a toda la cuenta.
 
 Si la base no responde al arrancar, el servidor levanta igual: el panel carga,
 la API contesta 503 con un mensaje claro y la conexión se reintenta sola hasta
@@ -204,6 +206,9 @@ varios intentos fallidos de login.
 ## Estructura
 
 ```
+.github/workflows/
+  mantener-activa.yml         consulta /api/health para que la demo no se apague
+
 sql/001_supabase.sql          esquema PostgreSQL
 
 servidor/

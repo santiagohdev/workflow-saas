@@ -1,0 +1,47 @@
+name: Mantener la demo activa
+
+# Render duerme la instancia gratuita a los 15 minutos sin tráfico, y Supabase
+# pausa el proyecto gratuito después de una semana sin actividad en la base.
+# /api/health pasa por la base, así que consultarlo seguido evita las dos cosas.
+#
+# Entre las 4 y las 7 UTC (de 1 a 4 de la mañana en Argentina) no se consulta:
+# Render da 750 horas gratis por mes para todos los servicios de la cuenta, y
+# una instancia despierta el mes entero usa 744. En esa franja la demo funciona
+# igual, solo que la primera visita tarda cerca de un minuto en despertarla.
+#
+# Si la consulta falla, la ejecución queda en rojo y GitHub avisa por mail.
+
+on:
+  schedule:
+    - cron: "*/5 0-3,7-23 * * *"
+    # GitHub desactiva los workflows programados de un repositorio público
+    # después de 60 días sin actividad. Una vez por semana este se vuelve a
+    # habilitar por la API, para no depender de que haya commits.
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  consultar:
+    if: github.event.schedule != '17 9 * * 1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Consultar /api/health
+        run: >
+          curl --fail --silent --show-error --max-time 75
+          --retry 2 --retry-delay 20 --retry-all-errors
+          https://workflow-saas-8006.onrender.com/api/health
+
+  reactivar:
+    if: github.event.schedule == '17 9 * * 1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    steps:
+      - name: Volver a habilitar este workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/mantener-activa.yml/enable"
