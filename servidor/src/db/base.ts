@@ -166,6 +166,19 @@ export async function cerrar(): Promise<void> {
   await pool.end();
 }
 
+/** Lee una fila de una tabla de la aplicación. Nunca lanza: la usa el chequeo
+    de salud, que tiene que poder contestar justamente cuando la base no
+    responde. */
+export async function baseResponde(): Promise<boolean> {
+  try {
+    await consultarUno("select 1 from organizations limit 1");
+    return true;
+  } catch (error) {
+    console.error("la base de datos no responde:", error instanceof Error ? error.message : error);
+    return false;
+  }
+}
+
 /* ---------------------------------------------------------------------------
    Esquema.
 

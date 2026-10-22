@@ -49,6 +49,21 @@ publicado en este repositorio. Para una demostración sin cobros reales va
 `DEMO_SIMULAR_PAGOS=true`: habilita el pago simulado del panel y el servidor usa
 un secreto aleatorio en cada arranque.
 
+### Que la demo no se apague
+
+En los planes gratuitos, Render duerme la instancia después de 15 minutos sin
+tráfico, y Supabase pausa el proyecto después de una semana sin actividad en la
+base. Un proyecto pausado no vuelve solo: hay que restaurarlo desde el panel de
+Supabase.
+
+`GET /api/health` consulta la base y responde 503 si no llega. Un monitor
+gratuito, como UptimeRobot o cron-job.org, que lo llame cada 5 minutos mantiene
+despiertas las dos cosas y avisa por mail si algo se cae.
+
+Si la base no responde al arrancar, el servidor levanta igual: el panel carga,
+la API contesta 503 con un mensaje claro y la conexión se reintenta sola hasta
+que la base vuelve.
+
 ### Cuentas de prueba
 
 Contraseña para todas: `demo1234`

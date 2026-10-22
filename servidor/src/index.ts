@@ -15,7 +15,7 @@ import cors from "cors";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { config } from "./config.ts";
-import { cerrar, migrar } from "./db/base.ts";
+import { baseResponde, cerrar, migrar } from "./db/base.ts";
 import { rutasAuth } from "./rutas/auth.ts";
 import { rutasOrganizaciones } from "./rutas/organizaciones.ts";
 import { rutasTableros } from "./rutas/tableros.ts";
@@ -50,14 +50,43 @@ app.use(
   }),
 );
 
+/* --- Hasta que la base está lista, la API responde 503. ---
+
+   Si la base no responde al arrancar, el servidor levanta igual y la sigue
+   esperando (ver el final del archivo). Mientras tanto el panel carga y quien
+   intenta entrar lee un mensaje claro. El chequeo de salud queda afuera: es
+   justamente el que tiene que informar el problema. */
+let baseLista = false;
+
+app.use("/api", (req, res, next) => {
+  if (baseLista || req.path === "/health") return next();
+  res.status(503).set("Retry-After", "30").json({
+    error: "La base de datos no está disponible en este momento. Probá de nuevo en unos minutos.",
+    codigo: "base_no_disponible",
+  });
+});
+
 /* --- El webhook, con el cuerpo crudo, antes que cualquier parser. --- */
 app.use("/api/webhooks", express.raw({ type: "application/json", limit: "1mb" }), rutasStripe);
 
 /* --- A partir de acá, JSON normal. --- */
 app.use(express.json({ limit: "1mb" }));
 
-app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, entorno: config.entorno, hora: new Date().toISOString() });
+/* El chequeo de salud consulta la base, no solo el proceso: un servidor que
+   contesta pero no llega a la base está caído para quien lo usa.
+
+   Está pensado para un monitor externo que lo llame cada pocos minutos. En los
+   planes gratuitos eso además evita dos apagones: Render duerme la instancia
+   a los 15 minutos sin tráfico, y Supabase pausa el proyecto tras una semana
+   sin actividad en la base. */
+app.get("/api/health", async (_req, res) => {
+  const base = baseLista && (await baseResponde());
+  res.status(base ? 200 : 503).json({
+    ok: base,
+    base: base ? "ok" : "sin conexión",
+    entorno: config.entorno,
+    hora: new Date().toISOString(),
+  });
 });
 
 app.use("/api/auth", rutasAuth);
@@ -96,12 +125,39 @@ app.use(manejarErrores);
 
 /* El esquema se aplica antes de aceptar tráfico. Levantar primero y migrar
    después deja una ventana en la que las primeras peticiones fallan contra
-   tablas que todavía no existen. */
-const servidor = await migrar().then(() =>
-  app.listen(config.puerto, () => {
-    console.log(`servidor escuchando en http://localhost:${config.puerto}  [${config.entorno}]`);
-  }),
-);
+   tablas que todavía no existen.
+
+   Si la base no responde, el servidor levanta igual y reintenta solo, cada vez
+   más espaciado. Terminar el proceso no arregla nada: la plataforma lo relanza
+   en bucle y quien entra ve una pantalla de carga que nunca termina. */
+async function prepararBase(): Promise<boolean> {
+  try {
+    await migrar();
+    baseLista = true;
+    return true;
+  } catch (error) {
+    console.error("no se pudo preparar la base:", error instanceof Error ? error.message : error);
+    return false;
+  }
+}
+
+async function reintentarBase(): Promise<void> {
+  for (let intento = 1; ; intento++) {
+    const segundos = Math.min(60, 5 * intento);
+    console.log(`nuevo intento con la base en ${segundos} s`);
+    await new Promise((listo) => setTimeout(listo, segundos * 1000));
+    if (await prepararBase()) {
+      console.log("base de datos lista");
+      return;
+    }
+  }
+}
+
+if (!(await prepararBase())) void reintentarBase();
+
+const servidor = app.listen(config.puerto, () => {
+  console.log(`servidor escuchando en http://localhost:${config.puerto}  [${config.entorno}]`);
+});
 
 /* Cerrar ordenado: sin esto, un reinicio deja peticiones a medias. */
 for (const senal of ["SIGINT", "SIGTERM"] as const) {
