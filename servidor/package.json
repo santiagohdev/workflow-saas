@@ -8,8 +8,9 @@
   },
   "scripts": {
     "dev": "node --experimental-strip-types --watch src/index.ts",
-    "start": "node --experimental-strip-types src/index.ts",
+    "start": "node --max-old-space-size=160 --liftoff-only --experimental-strip-types src/index.ts",
     "semilla": "node --experimental-strip-types src/db/semilla.ts",
+    "demo:imagen": "BASE_EMBEBIDA=true node --experimental-strip-types src/db/imagenDemo.ts",
     "test": "DATABASE_URL=postgres://prueba:prueba@localhost:5432/prueba JWT_SECRET=clave-de-prueba-suficientemente-larga node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "build:panel": "npm --prefix ../panel install --include=dev && npm --prefix ../panel run build",

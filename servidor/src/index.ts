@@ -134,8 +134,8 @@ app.use(manejarErrores);
 async function prepararBase(): Promise<boolean> {
   try {
     await migrar();
-    /* La base embebida arranca vacía: sin los datos de ejemplo, la demo no
-       tendría con qué entrar. */
+    /* La base embebida trae los datos de ejemplo en su imagen. Si la imagen
+       falta, arranca vacía y sin esto la demo no tendría con qué entrar. */
     if (config.baseEmbebida) await cargarDatosDemo();
     baseLista = true;
     return true;

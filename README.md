@@ -57,9 +57,16 @@ un secreto aleatorio en cada arranque.
 La demo pública corre con `BASE_EMBEBIDA=true`: un PostgreSQL embebido (PGlite,
 compilado a WebAssembly) dentro del mismo proceso. Así no depende de un
 proyecto externo: Supabase pausa los proyectos gratuitos después de una semana
-sin actividad, y uno pausado no vuelve solo. La base vive en memoria y se carga
-con las cuentas de prueba en cada inicio, así que lo que cambien los visitantes
-se descarta en el próximo reinicio.
+sin actividad, y uno pausado no vuelve solo. Cada inicio parte de
+`servidor/demo/base.tar.gz`, una imagen de la base con el esquema y las cuentas
+de prueba ya cargados, así que lo que cambien los visitantes se descarta en el
+próximo reinicio.
+
+La imagen existe por la memoria: crear la base desde cero pasa los 600 MB y la
+instancia gratuita de Render tiene 512. Abriendo la imagen, con el búfer de
+Postgres achicado y los flags de Node de `npm start`, el servidor entero queda
+cerca de 370 MB. Si cambian el esquema o los datos de ejemplo, se regenera con
+`npm run demo:imagen`.
 
 En el plan gratuito, Render duerme la instancia después de 15 minutos sin
 tráfico. El workflow `.github/workflows/mantener-activa.yml` llama a
@@ -223,7 +230,8 @@ servidor/
     config.ts                 configuración validada al arrancar
     tipos.ts                  tipos del dominio
     db/base.ts                capa de datos y frontera tipada
-    db/embebida.ts            PostgreSQL en memoria para la demo
+    db/embebida.ts            PostgreSQL embebido para la demo
+    db/imagenDemo.ts          genera demo/base.tar.gz
     db/semilla.ts             datos de demostración
     middleware/
       autenticar.ts           quién es

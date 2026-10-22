@@ -7,8 +7,8 @@
 
    Ejecutar:  npm run semilla
 
-   El servidor también la importa: con la base embebida (BASE_EMBEBIDA=true)
-   la carga en cada arranque, porque esa base empieza vacía.
+   También la usan db/imagenDemo.ts, para armar la imagen de la base
+   embebida, y el servidor, si esa imagen falta y la base arranca vacía.
    ========================================================================== */
 
 import { fileURLToPath } from "node:url";
